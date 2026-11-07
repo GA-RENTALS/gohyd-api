@@ -1,0 +1,50 @@
+from rest_framework import viewsets
+from rest_framework.permissions import AllowAny
+
+from . import models as m
+from . import serializers as s
+
+
+class LangMixin:
+    permission_classes = [AllowAny]
+    lookup_field = 'slug'
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        lang = self.request.query_params.get('lang', 'en')
+        ctx['lang'] = lang if lang in ('en', 'te', 'hi') else 'en'
+        return ctx
+
+
+class DestinationViewSet(LangMixin, viewsets.ReadOnlyModelViewSet):
+    serializer_class = s.DestinationSerializer
+    filterset_fields = ['is_hyderabad_explore', 'categories__slug']
+    search_fields = ['slug', 'region', 'translations__title']
+    queryset = m.Destination.objects.filter(status=m.ContentStatus.PUBLISHED).select_related('cover').prefetch_related('translations')
+
+
+class BlogViewSet(LangMixin, viewsets.ReadOnlyModelViewSet):
+    serializer_class = s.BlogSerializer
+    filterset_fields = ['category__slug', 'tags__slug']
+    queryset = m.Blog.objects.filter(status=m.ContentStatus.PUBLISHED).prefetch_related('translations')
+
+
+class CmsPageViewSet(LangMixin, viewsets.ReadOnlyModelViewSet):
+    serializer_class = s.CmsPageSerializer
+    pagination_class = None
+    queryset = m.CmsPage.objects.filter(status=m.ContentStatus.PUBLISHED).prefetch_related('translations')
+
+
+class FAQViewSet(LangMixin, viewsets.ReadOnlyModelViewSet):
+    serializer_class = s.FAQSerializer
+    pagination_class = None
+    filterset_fields = ['destination__slug', 'trip__slug']
+    queryset = m.FAQ.objects.filter(is_published=True)
+    lookup_field = 'pk'
+
+
+class TestimonialViewSet(LangMixin, viewsets.ReadOnlyModelViewSet):
+    serializer_class = s.TestimonialSerializer
+    pagination_class = None
+    queryset = m.Testimonial.objects.filter(is_published=True)
+    lookup_field = 'pk'
