@@ -36,7 +36,7 @@ With the server running (`python manage.py runserver`), open:
 |---|---|---|
 | **Backend home (links to everything)** | <http://127.0.0.1:8000/> | A small page that links to the items below. |
 | **Staff admin panel** (new) | <http://localhost:3000/admin> | The Next.js admin. `/admin/` on the backend forwards here. Set `ADMIN_PANEL_URL` to change it. |
-| **Django admin** (classic) | <http://127.0.0.1:8000/admin/?classic=1> | The stock Django admin, for developers. Sign in with phone number (always `+91…`) and password. |
+| **Django admin** (classic) | <http://127.0.0.1:8000/admin/?classic=1> | Curated, grouped staff navigation with an all-models index. Sign in with phone number (always `+91…`) and password. |
 | **API documentation** | <http://127.0.0.1:8000/api/docs/> | Interactive Swagger UI. |
 | **API schema** | <http://127.0.0.1:8000/api/schema/> | Machine-readable OpenAPI. |
 | **Public API example** | <http://127.0.0.1:8000/api/v1/trips/> | Published trips as JSON. |
@@ -242,9 +242,9 @@ Used by the admin panel. All paths are under `admin/` and require a staff user w
 |---|---|---|
 | GET | `admin/session/` | Who is signed in and their permissions. |
 | GET | `admin/modules/` | The menu: modules and tables this user may see, with allowed actions. |
-| GET | `admin/dashboard/` | Figures, charts, recent bookings, and the "finish setting up" list. |
+| GET | `admin/dashboard/` | Figures, charts, recent bookings, upcoming open trip dates, and the "finish setting up" list. |
 | GET | `admin/resources/<table>/schema/` | Describes the fields of a table (types, choices, linked records, upload limits). |
-| GET, POST | `admin/resources/<table>/` | List (`?search=`, `?ordering=`, `?page=`) and create. Accepts JSON or multipart (files). |
+| GET, POST | `admin/resources/<table>/` | List (`?search=`, `?ordering=`, `?page=`) and create. Accepts JSON or multipart (files). Trips can be created by staff with the `trips.add_trip` permission. |
 | GET, PATCH, PUT, DELETE | `admin/resources/<table>/<id>/` | Read, edit, delete. |
 | POST | `admin/actions/<action>/` | Sensitive actions: `verify-payment`, `approve-refund`, `record-manual-payment`, `departure-exception`, `content-transition`, `participant-check-in`. |
 
@@ -324,7 +324,7 @@ Without keys, the customer's "Pay" button reports that online payment is unavail
 | Command | Purpose |
 |---|---|
 | `seed_platform` | First-run roles, settings, KPI and event definitions, notification templates. Safe to repeat. |
-| `import_frontend_content` | Load the website's trips, categories, destination details, testimonials and site figures. Idempotent; creates drafts. `--dry-run`, `--publish` (see FIXES.md, B-22, before using). |
+| `import_frontend_content` | Load the website's trips, categories, destination details, testimonials and site figures. Idempotent; imported content always remains draft until the admin approval workflow publishes it. `--dry-run`. |
 | `seed_demo_data` | **Development only.** One demo booking and a "Demo" row in every empty admin table. `--dry-run`. |
 | `upload_local_media` | Copy local files to S3. `--dry-run`. |
 

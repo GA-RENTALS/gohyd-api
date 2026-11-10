@@ -43,13 +43,13 @@ Each item has an ID (`B-` backend, `F-` frontend, `I-` infrastructure) so you ca
 
 | Check | Result |
 |---|---|
-| Backend automated tests | **56 of 56 pass** (46 existing, fixed; 10 new for WhatsApp delivery) |
+| Backend automated tests | **38 tests pass** across tenancy, content, bookings, admin API, core and notifications. Local test DB emits the expected warning because its role bypasses RLS; CI provisions a restricted role. |
 | Django system check | No errors |
 | Django deployment check | Run with development settings: security warnings that clear once production settings are used (B-02), and 100+ API-documentation warnings (B-16) |
 | Every admin table (171) | List, search and sort work; create, edit, delete and file upload tested on representative tables |
 | Customer journey against the real API | Sign in, profile, checkout, participants, waiver, payment attempt, bookings: all work (payment needs live keys) |
 | Website and admin at 360, 390, 768, 1280 px | 13 pages × 4 widths: no horizontal overflow |
-| Frontend type check and production build | Pass |
+| Frontend type check and production build | Type check passes. Production build passes under Node 22.12. The local default Node 20.9 still fails on Tailwind's ESM-only `magic-string`; Node 22.12 is now the minimum and is configured in CI. CI still needs its first hosted run. |
 | Frontend automated tests | **None exist** |
 | Python dependency check | No conflicts |
 | Node dependency audit | 2 issues, both inside the framework's bundled CSS tool (see F-11) |
@@ -86,7 +86,7 @@ Each item has an ID (`B-` backend, `F-` frontend, `I-` infrastructure) so you ca
 - **Where:** PostgreSQL role, `.env`, `tenancy/checks.py`.
 
 **B-02. Production security settings** (P0)
-- **Already in code:** secure session and CSRF cookies and HSTS switch on automatically when `DEBUG` is off; `SECURE_SSL_REDIRECT` is an environment switch.
+- **Already in code:** secure session and CSRF cookies, HSTS, and `SECURE_SSL_REDIRECT` switch on by default when `DEBUG` is off. For a TLS-terminating proxy, configure and verify a trusted forwarded-scheme signal before launch; no provider-specific proxy trust is assumed.
 - **To do:** in production set `DEBUG=False`, a strong `SECRET_KEY`, `SECURE_SSL_REDIRECT=True`, correct `ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS` and `CSRF_TRUSTED_ORIGINS`. Then run `python manage.py check --deploy` against the production environment until it is clean. (Run in development it still warns, because `DEBUG` is on.)
 - **Where:** `config/settings.py`, environment variables.
 
@@ -128,12 +128,13 @@ Each item has an ID (`B-` backend, `F-` frontend, `I-` infrastructure) so you ca
 
 **B-07. Demo data must not go live** (P0)
 - **Problem:** the demo trip, demo customer, a demo booking and about 150 "Demo" rows were added for development.
-- **Fix:** write a cleanup command that removes only rows created by `seed_demo_data` (they all start with "Demo" and use the `+91 90000 001xx` numbers), and run it before launch. Never run `seed_demo_data` in production.
+- **Already in code:** `seed_demo_data` refuses to run when `DEBUG=False`.
+- **Still to do:** inspect and remove only the known demo rows before launch. Do not delete records based on names or phone patterns alone; verify their IDs and relationships first.
 - **Where:** `core/management/commands/seed_demo_data.py`.
 
 **B-22. Importing with `--publish` skips the translation rule** (P0)
 - **Problem:** the rule says a trip or destination cannot be published until English, Telugu and Hindi are all approved. `import_frontend_content --publish` sets the status directly and ignores the rule. The imported content only has English.
-- **Fix:** make `--publish` go through the same publish check, or remove the option and publish only from the admin. Add the missing translations first.
+- **Fixed in code:** removed `--publish`; imports always remain drafts and must go through the normal admin approval workflow. Add the missing translations before publishing.
 - **Where:** `content/management/commands/import_frontend_content.py`, `content/models.py`.
 
 <a id="backend-p1"></a>
@@ -191,7 +192,7 @@ Each item has an ID (`B-` backend, `F-` frontend, `I-` infrastructure) so you ca
 - **Fix:** for each trip add a cover photo, dates and prices, all three languages, then publish from the admin. When any trip is published the home page swaps its hand-made cards for live ones; check how that looks first.
 - **Where:** Admin → Trips; `components/publicContent.ts`.
 
-**F-02. Real waiver text** (P0): checkout shows a generic sentence. Replace it with your approved waiver and link to the full text; store which version was accepted. *Where:* `components/booking/CheckoutView.tsx`.
+**F-02. Real waiver text** (P0): checkout fetches and shows the active configured waiver and stores the accepted waiver version per participant. The dashboard warns authorized staff when there is no usable waiver. **Still needed:** enter the legally approved English text (and reviewed translations) in Admin → Logistics → Safety waivers before taking bookings. *Where:* `components/booking/CheckoutView.tsx`, `bookings`.
 
 **F-03. One full test booking** (P0): the booking pages were tested against the API and by rendering, not with a real payment. Do one complete booking with Razorpay test keys on a phone. *Where:* `/trips` → `/account`.
 
@@ -253,7 +254,7 @@ Each item has an ID (`B-` backend, `F-` frontend, `I-` infrastructure) so you ca
 |---|---|---|
 | **I-01** | P0 | Provision staging and production environments (separate from development): managed PostgreSQL, Redis, application hosting, HTTPS, domain. |
 | **I-02** | P0 | Secrets in a secrets manager, not `.env` files. |
-| **I-03** | P1 | Continuous integration: run backend tests (with a limited database user), type check and build on every change. There is no pipeline today and no container files. |
+| **I-03** | P1 | CI workflows added in both repositories: API tests use a `NOSUPERUSER NOBYPASSRLS` PostgreSQL role; UI type check and production build run on pushes and pull requests. Confirm the first hosted runs pass. |
 | **I-04** | P1 | Deployment recipe: container images for the Django API, worker, scheduler and Next.js app; migrations as a release step. |
 | **I-05** | P1 | Monitoring and alerts: errors, failed background jobs, payment webhook failures, uptime. |
 | **I-06** | P1 | Automated database backups and the restore drill (B-12). |
@@ -285,6 +286,11 @@ Each item has an ID (`B-` backend, `F-` frontend, `I-` infrastructure) so you ca
 | Content | Website content imported into the database as drafts, idempotently. |
 | Website | Home page rebuilt from one 135 KB file into small components (output verified identical); duplicate React keys fixed; header tidied. |
 | Phones | Account and home page no longer overflow; mobile "See latest plans" bar fixed; compact checkout; admin tables as cards; larger tap targets. |
+| Staff admin (10 Nov 2026) | Dashboard now lists upcoming published trip dates and provides Add trip for staff with `trips.add_trip`. The Trips resource allows creating and editing without allowing deletion. Django admin navigation is grouped by staff tasks. |
+| Safety waiver | Checkout displays the active configured waiver, requires its current ID, and records the exact accepted version per participant. The admin dashboard flags missing or blank waiver text; legal text still needs to be supplied and approved. |
+| Production and content safeguards | SSL redirect now defaults on outside debug mode; demo seeding is blocked outside debug mode; frontend content imports remain drafts; RLS role checks are visible in development and enforced in production. |
+| Frontend build runtime | Declared Node 22.12+ as the frontend requirement and verified a production build on Node 22.12; the local Node 20.9 runtime is unsupported. |
+| CI | Added PostgreSQL-backed API tests with a limited RLS role and a separate UI type-check/build workflow. First hosted runs are pending. |
 | Cleanup | Removed the old static site and duplicate image folder (17 MB), unused demo components and images, build artifacts and an unused library. |
 
 ---

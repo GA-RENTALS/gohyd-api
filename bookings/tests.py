@@ -5,8 +5,10 @@ from decimal import Decimal
 from django.db import connection
 from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
+from rest_framework.test import APIClient
 
 from core.testing import make_gst, make_trip, make_user, TenantTestCase
+from operations.models import ParticipantWaiverAcceptance, SafetyWaiver
 from trips.models import TripSchedule
 
 from .models import Booking
@@ -85,6 +87,54 @@ class CheckoutTests(TenantTestCase):
         staff = make_user('+919000000001', kind='ADMIN', is_staff=True)
         with self.assertRaises(BookingError):                                       # no permission -> refused
             grant_departure_exception(b, staff, 'VIP')
+
+
+class SafetyWaiverTests(TenantTestCase):
+    def setUp(self):
+        self.user = make_user()
+        _, schedule = make_trip('waiver-test')
+        self.booking = create_checkout(self.user, [CheckoutLine(schedule.pk, 1)], 'waiver-test').bookings.get()
+        self.booking.participants.create(full_name='Test Participant')
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def test_active_waiver_is_publicly_available(self):
+        waiver = SafetyWaiver.objects.create(title='Participation waiver', version=3, body_en='Approved terms.')
+        response = APIClient().get('/api/v1/safety-waivers/active/')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual((response.data['id'], response.data['version'], response.data['body']),
+                         (str(waiver.pk), 3, 'Approved terms.'))
+
+    def test_checkout_cannot_accept_without_active_waiver(self):
+        response = APIClient().get('/api/v1/safety-waivers/active/')
+        self.assertEqual(response.status_code, 503)
+        response = self.client.post(f'/api/v1/bookings/{self.booking.pk}/accept-waiver/', {}, format='json')
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(ParticipantWaiverAcceptance.objects.count(), 0)
+
+    def test_whitespace_only_waiver_is_not_usable(self):
+        waiver = SafetyWaiver.objects.create(title='Blank terms', version=1, body_en='   \n')
+        response = APIClient().get('/api/v1/safety-waivers/active/')
+        self.assertEqual(response.status_code, 503)
+        response = self.client.post(
+            f'/api/v1/bookings/{self.booking.pk}/accept-waiver/',
+            {'waiver': str(waiver.pk)},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(ParticipantWaiverAcceptance.objects.count(), 0)
+
+    def test_acceptance_records_the_exact_waiver_version(self):
+        waiver = SafetyWaiver.objects.create(title='Participation waiver', version=3, body_en='Approved terms.')
+        response = self.client.post(
+            f'/api/v1/bookings/{self.booking.pk}/accept-waiver/',
+            {'waiver': str(waiver.pk)},
+            format='json',
+        )
+        self.assertEqual(response.status_code, 200)
+        acceptance = ParticipantWaiverAcceptance.objects.get()
+        self.assertEqual(acceptance.waiver_id, waiver.pk)
+        self.assertIsNotNone(acceptance.accepted_at)
 
 
 class OverbookingTests(TransactionTestCase):

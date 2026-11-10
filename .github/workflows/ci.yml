@@ -1,0 +1,54 @@
+name: Backend CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DEBUG: "true"
+      SECRET_KEY: ci-only-secret
+      POSTGRES_URL: postgresql://gohyd_test:testpw@127.0.0.1:5432/gohyderabad
+      REDIS_URL: redis://127.0.0.1:6379/0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install backend dependencies
+        run: pip install -r requirements.txt
+      - name: Create restricted test database role
+        run: |
+          PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -d postgres \
+            -c "CREATE ROLE gohyd_test LOGIN PASSWORD 'testpw' NOSUPERUSER NOBYPASSRLS CREATEDB;"
+          PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -d postgres \
+            -c "CREATE DATABASE gohyderabad OWNER gohyd_test;"
+      - name: Run backend tests
+        run: python manage.py test --noinput

@@ -9,8 +9,9 @@ import uuid
 from datetime import timedelta
 
 from django.contrib.auth.models import Group
-from django.core.files.base import ContentFile
 from django.core.management.base import BaseCommand, CommandError
+from django.conf import settings
+from django.core.files.base import ContentFile
 from django.db import models, transaction
 from django.utils import timezone
 from django.utils.text import slugify
@@ -39,6 +40,8 @@ class Command(BaseCommand):
         parser.add_argument('--dry-run', action='store_true', help='Run everything, then roll back.')
 
     def handle(self, *args, **o):
+        if not settings.DEBUG:
+            raise CommandError('Demo data is disabled when DEBUG=False. Use a disposable development or test database.')
         try:
             tenant = Tenant.objects.get(slug=o['tenant'])
         except Tenant.DoesNotExist:

@@ -30,7 +30,8 @@ from core.models import Setting
 from payments.models import BusinessEntity, GstConfiguration, Payment, PaymentKind, Refund
 from payments import services as payment_services
 from content.models import ContentStatus
-from trips.models import Trip
+from operations.models import SafetyWaiver
+from trips.models import Trip, TripSchedule
 
 from .permissions import StaffOnly, has_staff_membership
 from .registry import MODULE_LABELS, RESOURCES, Resource, get_resource, module_resource_keys
@@ -56,9 +57,9 @@ def _write_mode_allows(resource, action):
     if action == 'view':
         return True
     if action == 'add':
-        return resource.mode in {'full', 'create'}
+        return resource.mode in {'full', 'create', 'create_update'}
     if action == 'change':
-        return resource.mode in {'full', 'update'}
+        return resource.mode in {'full', 'update', 'create_update'}
     if action == 'delete':
         return resource.mode == 'full'
     return False
@@ -489,6 +490,7 @@ class AdminDashboardView(APIView):
             charts['revenue_monthly'] = monthly(Payment.objects.filter(status=Payment.Status.SUCCEEDED), 'created_at', 'amount')
 
         recent = []
+        upcoming_trips = []
         if request.user.has_perm('bookings.view_booking'):
             recent = list(Booking.objects.select_related('primary_booker', 'schedule__trip').order_by('-created_at').values(
                 'id', 'reference', 'status', 'total_amount', 'created_at', 'primary_booker__full_name', 'schedule__trip__slug')[:6])
@@ -496,8 +498,27 @@ class AdminDashboardView(APIView):
                 row['id'] = str(row['id'])
                 row['total_amount'] = str(row['total_amount'])
                 row['created_at'] = row['created_at'].isoformat()
+        if request.user.has_perm('trips.view_tripschedule'):
+            upcoming_trips = list(TripSchedule.objects.filter(
+                starts_at__gte=now,
+                is_open=True,
+                trip__status=ContentStatus.PUBLISHED,
+                trip__operational_status=Trip.Operational.OPEN,
+            ).select_related('trip').order_by('starts_at').values(
+                'id', 'starts_at', 'capacity', 'seats_booked', 'trip__slug',
+            )[:6])
+            for row in upcoming_trips:
+                row['id'] = str(row['id'])
+                row['starts_at'] = row['starts_at'].isoformat()
 
-        return Response({'cards': cards, 'charts': charts, 'recent_bookings': recent, 'setup': self._setup(request.user), 'as_of': timezone.now().isoformat()})
+        return Response({
+            'cards': cards,
+            'charts': charts,
+            'recent_bookings': recent,
+            'upcoming_trips': upcoming_trips,
+            'setup': self._setup(request.user),
+            'as_of': timezone.now().isoformat(),
+        })
 
     @staticmethod
     def _setup(user):
@@ -506,6 +527,16 @@ class AdminDashboardView(APIView):
 
         def add(key, severity, title, detail, href):
             todo.append({'key': key, 'severity': severity, 'title': title, 'detail': detail, 'href': href})
+
+        if user.has_perm('operations.view_safetywaiver'):
+            active_waiver = any(
+                waiver.body_en.strip()
+                for waiver in SafetyWaiver.objects.filter(is_active=True).only('body_en')
+            )
+            if not active_waiver:
+                add('safety-waiver', 'warning', 'Add an approved safety waiver',
+                    'Checkout cannot continue until an active waiver with English text is configured.',
+                    '/admin/logistics/safety-waivers')
 
         if user.has_perm('payments.view_businessentity'):
             entity = BusinessEntity.objects.filter(is_default=True).first()

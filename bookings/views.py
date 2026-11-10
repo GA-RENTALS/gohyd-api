@@ -10,6 +10,8 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from core.security import get_client_ip
+from operations.models import ParticipantWaiverAcceptance, SafetyWaiver
 from payments import gateway, services as pay
 from payments.models import Refund
 from . import models as m
@@ -17,8 +19,36 @@ from . import serializers as s
 from .services import BookingError, CheckoutLine, cancel_booking, create_checkout
 
 
+def _active_safety_waiver(waiver_id=None):
+    waivers = SafetyWaiver.objects.filter(is_active=True).order_by('-updated_at')
+    if waiver_id is not None:
+        waivers = waivers.filter(pk=waiver_id)
+    return next((waiver for waiver in waivers if waiver.body_en.strip()), None)
+
+
 def fail(e: BookingError, http=400):
     return Response({'status': 'error', 'code': e.code, 'message': e.message, 'details': e.details}, status=http)
+
+
+class ActiveSafetyWaiverView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request):
+        waiver = _active_safety_waiver()
+        if waiver is None:
+            return Response(
+                {'status': 'error', 'message': 'The participation waiver is not available yet.'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        language = request.query_params.get('lang', 'en')
+        body = getattr(waiver, f'body_{language}', '') if language in {'en', 'te', 'hi'} else ''
+        return Response({
+            'id': str(waiver.pk),
+            'title': waiver.title,
+            'version': waiver.version,
+            'language': language if body else 'en',
+            'body': body.strip() if body and body.strip() else waiver.body_en.strip(),
+        })
 
 
 class CartView(APIView):
@@ -131,5 +161,23 @@ class BookingViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=True, methods=['post'], url_path='accept-waiver')
     def accept_waiver(self, request, pk=None):
         booking = self.get_object()
-        booking.participants.filter(waiver_accepted_at__isnull=True).update(waiver_accepted_at=timezone.now())
-        return Response({'status': 'accepted'})
+        waiver_id = request.data.get('waiver')
+        if not waiver_id:
+            return Response({'status': 'error', 'message': 'A waiver version is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        waiver = _active_safety_waiver(waiver_id)
+        if waiver is None:
+            return Response({'status': 'error', 'message': 'This waiver is no longer active. Reload checkout and review the current waiver.'},
+                            status=status.HTTP_409_CONFLICT)
+        participants = list(booking.participants.all())
+        if not participants:
+            return Response({'status': 'error', 'message': 'Add the participants before accepting the waiver.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        ip = get_client_ip(request)
+        for participant in participants:
+            ParticipantWaiverAcceptance.objects.get_or_create(
+                participant=participant,
+                waiver=waiver,
+                defaults={'ip': ip},
+            )
+        booking.participants.update(waiver_accepted_at=timezone.now())
+        return Response({'status': 'accepted', 'waiver': str(waiver.pk), 'version': waiver.version})

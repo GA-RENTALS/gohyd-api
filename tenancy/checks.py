@@ -1,5 +1,5 @@
 from django.conf import settings
-from django.core.checks import Error, Tags, register
+from django.core.checks import Error, Tags, Warning, register
 from django.db import connections
 
 
@@ -7,14 +7,13 @@ from django.db import connections
 def tenant_rls_database_check(app_configs, **kwargs):
     if not getattr(settings, 'TENANT_RLS_ENABLED', True):
         return [Error('Tenant RLS is disabled.', id='tenancy.E001')]
-    if settings.DEBUG:
-        return []
 
+    issue = Warning if settings.DEBUG else Error
     errors = []
     for alias in connections:
         connection = connections[alias]
         if connection.vendor != 'postgresql':
-            errors.append(Error(
+            errors.append(issue(
                 f'Database {alias!r} must use PostgreSQL for tenant row-level security.',
                 id='tenancy.E002',
             ))
@@ -26,13 +25,13 @@ def tenant_rls_database_check(app_configs, **kwargs):
                 )
                 row = cursor.fetchone()
         except Exception as exc:
-            errors.append(Error(
+            errors.append(issue(
                 f'Could not verify the RLS capabilities of database {alias!r}: {exc.__class__.__name__}.',
                 id='tenancy.E003',
             ))
             continue
         if not row or row[0]:
-            errors.append(Error(
+            errors.append(issue(
                 f'Database role for {alias!r} must be NOSUPERUSER and NOBYPASSRLS.',
                 id='tenancy.E004',
             ))

@@ -53,7 +53,7 @@ class Resource:
     module: str
     label: str
     model: type
-    mode: str = 'full'  # full | read | create | update
+    mode: str = 'full'  # full | read | create | update | create_update
     fields: tuple[str, ...] = ()
     read_only_fields: tuple[str, ...] = ()
     search_fields: tuple[str, ...] = ()
@@ -70,7 +70,7 @@ def _r(key, module, label, model, **kwargs):
 RESOURCES = {
     r.key: r for r in [
         # Trips and destinations
-        _r('trips', 'trips', 'Trips', Trip, mode='update', search_fields=('slug',), ordering_fields=('created_at', 'sort_order', 'status'), read_only_fields=('status', 'publish_at', 'published_at')),
+        _r('trips', 'trips', 'Trips', Trip, mode='create_update', search_fields=('slug',), ordering_fields=('created_at', 'sort_order', 'status'), read_only_fields=('status', 'publish_at', 'published_at')),
         _r('trip-schedules', 'trips', 'Schedules', TripSchedule, search_fields=('trip__slug',), ordering_fields=('starts_at', 'created_at')),
         _r('trip-categories', 'trips', 'Categories', TripCategory, search_fields=('name', 'slug'), ordering_fields=('sort_order', 'name')),
         _r('trip-translations', 'trips', 'Trip translations', TripTranslation, search_fields=('title', 'language'), read_only_fields=('status', 'reviewed_by', 'approved_at')),

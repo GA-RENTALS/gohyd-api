@@ -1,6 +1,9 @@
 from decimal import Decimal
 
+from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.test import SimpleTestCase
+from django.test import override_settings
 
 from core.money import add_gst, extract_gst, format_inr, split_advance
 
@@ -22,3 +25,10 @@ class MoneyTests(SimpleTestCase):
 
     def test_inr_format(self):
         self.assertEqual(format_inr(Decimal('123456.5')), '₹1,23,456.50')
+
+
+class DemoDataCommandSafetyTests(SimpleTestCase):
+    @override_settings(DEBUG=False)
+    def test_demo_seed_is_refused_outside_debug(self):
+        with self.assertRaisesMessage(CommandError, 'Demo data is disabled'):
+            call_command('seed_demo_data')

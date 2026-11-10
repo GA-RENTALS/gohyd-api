@@ -1,6 +1,8 @@
 import os
 from unittest import mock
 
+from celery.exceptions import Retry
+
 from accounts.services import WhatsAppService
 from core.testing import TenantTestCase, make_user
 
@@ -89,6 +91,18 @@ class DeliveryTests(TenantTestCase):
             job = self.run_deliver(job, retries=deliver.max_retries)
         self.assertEqual(job.status, NotificationJob.Status.FAILED)
         self.assertEqual(NotificationFailure.objects.filter(job=job).count(), 1)
+
+    def test_transient_delivery_error_is_retried(self):
+        self.template()
+        job = self.job()
+        with mock.patch.object(WhatsAppService, 'configured', return_value=True), \
+                mock.patch.object(WhatsAppService, 'send_template', side_effect=RuntimeError('temporary')):
+            with mock.patch.object(deliver, 'retry', side_effect=Retry()) as retry:
+                with self.assertRaises(Retry):
+                    deliver.run(str(job.pk), str(self.tenant.pk))
+        job.refresh_from_db()
+        retry.assert_called_once()
+        self.assertEqual(job.status, NotificationJob.Status.QUEUED)
 
     def test_a_sent_job_is_not_sent_twice(self):
         self.template()

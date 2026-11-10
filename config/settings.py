@@ -44,7 +44,7 @@ except ValueError as exc:
     raise ImproperlyConfigured('TRUSTED_PROXY_IPS must contain valid IP addresses or CIDR networks.') from exc
 COOKIES_SECURE = _bool('COOKIES_SECURE', str(not DEBUG))
 SESSION_COOKIE_SECURE = CSRF_COOKIE_SECURE = COOKIES_SECURE
-SECURE_SSL_REDIRECT = _bool('SECURE_SSL_REDIRECT')
+SECURE_SSL_REDIRECT = _bool('SECURE_SSL_REDIRECT', str(not DEBUG))
 SECURE_CONTENT_TYPE_NOSNIFF = True
 SECURE_REFERRER_POLICY = 'strict-origin-when-cross-origin'
 X_FRAME_OPTIONS = 'DENY'
@@ -260,7 +260,7 @@ TINYMCE_DEFAULT_CONFIG = {
 UNFOLD = {
     'SITE_TITLE': 'GoHyderabad admin',
     'SITE_HEADER': 'GoHyderabad',
-    'SITE_SUBHEADER': 'Meet · Explore · Experience',
+    'SITE_SUBHEADER': 'Admin workspace',
     'SITE_URL': os.getenv('FRONTEND_ORIGIN', 'http://localhost:3000'),
     'SHOW_HISTORY': True,
     'SHOW_VIEW_ON_SITE': False,
@@ -269,5 +269,60 @@ UNFOLD = {
         '50': '#fdf7ea', '100': '#faedcb', '200': '#f4d994', '300': '#edc25e', '400': '#e6ad49',
         '500': '#d4902c', '600': '#b87021', '700': '#955220', '800': '#7a4222', '900': '#66381f', '950': '#3a1c0d',
     }},
-    'SIDEBAR': {'show_search': True, 'show_all_applications': True},
+    'SIDEBAR': {
+        'show_search': True,
+        'show_all_applications': False,
+        'navigation': [
+            {
+                'title': 'Daily work',
+                'separator': True,
+                'collapsible': False,
+                'items': [
+                    {'title': 'Bookings', 'icon': 'confirmation_number', 'link': reverse_lazy('admin:bookings_booking_changelist'), 'permission': lambda request: request.user.has_perm('bookings.view_booking')},
+                    {'title': 'Checkout orders', 'icon': 'shopping_cart', 'link': reverse_lazy('admin:bookings_checkoutorder_changelist'), 'permission': lambda request: request.user.has_perm('bookings.view_checkoutorder')},
+                    {'title': 'Trip dates', 'icon': 'calendar_month', 'link': reverse_lazy('admin:trips_tripschedule_changelist'), 'permission': lambda request: request.user.has_perm('trips.view_tripschedule')},
+                    {'title': 'Trips', 'icon': 'map', 'link': reverse_lazy('admin:trips_trip_changelist'), 'permission': lambda request: request.user.has_perm('trips.view_trip')},
+                ],
+            },
+            {
+                'title': 'Payments',
+                'separator': True,
+                'collapsible': False,
+                'items': [
+                    {'title': 'Payments', 'icon': 'payments', 'link': reverse_lazy('admin:payments_payment_changelist'), 'permission': lambda request: request.user.has_perm('payments.view_payment')},
+                    {'title': 'Refunds', 'icon': 'currency_exchange', 'link': reverse_lazy('admin:payments_refund_changelist'), 'permission': lambda request: request.user.has_perm('payments.view_refund')},
+                ],
+            },
+            {
+                'title': 'People & support',
+                'separator': True,
+                'collapsible': False,
+                'items': [
+                    {'title': 'Customers and staff', 'icon': 'group', 'link': reverse_lazy('admin:accounts_user_changelist'), 'permission': lambda request: request.user.has_perm('accounts.view_user')},
+                    {'title': 'Support tickets', 'icon': 'support_agent', 'link': reverse_lazy('admin:crm_supportticket_changelist'), 'permission': lambda request: request.user.has_perm('crm.view_supportticket')},
+                ],
+            },
+            {
+                'title': 'Manage the business',
+                'separator': True,
+                'collapsible': False,
+                'items': [
+                    {'title': 'Vehicles', 'icon': 'airport_shuttle', 'link': reverse_lazy('admin:operations_vehicle_changelist'), 'permission': lambda request: request.user.has_perm('operations.view_vehicle')},
+                    {'title': 'Vendors', 'icon': 'store', 'link': reverse_lazy('admin:operations_vendor_changelist'), 'permission': lambda request: request.user.has_perm('operations.view_vendor')},
+                    {'title': 'Website pages', 'icon': 'article', 'link': reverse_lazy('admin:content_cmspage_changelist'), 'permission': lambda request: request.user.has_perm('content.view_cmspage')},
+                    {'title': 'Destinations', 'icon': 'location_on', 'link': reverse_lazy('admin:content_destination_changelist'), 'permission': lambda request: request.user.has_perm('content.view_destination')},
+                ],
+            },
+            {
+                'title': 'Administration',
+                'separator': True,
+                'collapsible': False,
+                'items': [
+                    {'title': 'Business settings', 'icon': 'settings', 'link': reverse_lazy('admin:core_setting_changelist'), 'permission': lambda request: request.user.has_perm('core.view_setting')},
+                    {'title': 'Audit log', 'icon': 'history', 'link': reverse_lazy('admin:core_auditlog_changelist'), 'permission': lambda request: request.user.has_perm('core.view_auditlog')},
+                    {'title': 'All Django models', 'icon': 'apps', 'link': '/admin/?classic=1'},
+                ],
+            },
+        ],
+    },
 }

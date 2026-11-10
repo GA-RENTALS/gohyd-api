@@ -1,8 +1,11 @@
+import argparse
+
 from django.core.exceptions import ValidationError
 from core.testing import TenantTestCase
 from django.test import TestCase
 from rest_framework.test import APIClient
 
+from content.management.commands.import_frontend_content import Command as ImportFrontendContentCommand
 from .models import ContentStatus, Destination, DestinationTranslation
 
 
@@ -39,3 +42,15 @@ class PublishGateTests(TenantTestCase):
         for step in (ContentStatus.SUBMITTED, ContentStatus.UNDER_REVIEW, ContentStatus.APPROVED):
             t.move_to(step)
         self.assertEqual(t.status, ContentStatus.APPROVED)
+
+
+class ImportFrontendContentCommandTests(TestCase):
+    def test_import_command_cannot_bypass_translation_approval(self):
+        parser = argparse.ArgumentParser()
+        ImportFrontendContentCommand().add_arguments(parser)
+        option_strings = {
+            option
+            for action in parser._actions
+            for option in action.option_strings
+        }
+        self.assertNotIn('--publish', option_strings)
