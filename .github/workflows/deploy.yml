@@ -1,0 +1,97 @@
+name: Deploy GoHyderabad Backend
+
+on:
+  push:
+    branches:
+      - release
+  pull_request:
+
+concurrency:
+  group: gohyd-backend-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: ci-only
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DEBUG: "True"
+      SECRET_KEY: ci-only-dummy-secret-key-for-test-run-12345
+      POSTGRES_URL: postgres://postgres:ci-only@127.0.0.1:5432/postgres
+      REDIS_URL: redis://127.0.0.1:6379/1
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/0
+      TENANT_RLS_ENABLED: "False"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Check for unapplied model migrations
+        run: python manage.py makemigrations --check --dry-run
+
+      - name: Run test suite
+        run: python manage.py test
+
+  deploy:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/release'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to EC2 via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          command_timeout: 30m
+          timeout: 60s
+          script: |
+            set -e
+            cd /home/ubuntu/gohyd-api
+            PREVIOUS=$(git rev-parse HEAD)
+            git pull origin release
+
+            # Rebuild and start updated containers
+            docker compose up -d --build --remove-orphans
+
+            # Apply pending migrations
+            docker compose exec -T web python manage.py migrate --noinput
+
+            # Health checks: verify Django DB connection and Celery worker response
+            if ! docker compose exec -T web python manage.py check --database default \
+              || ! docker exec -t gohyd_celery_worker celery -A config inspect ping --timeout 10; then
+              echo "Deployment health check failed: rolling back to commit $PREVIOUS"
+              git reset --hard "$PREVIOUS"
+              docker compose up -d --build --remove-orphans
+              exit 1
+            fi
+
+            # Clean up dangling images to preserve disk space
+            docker image prune -f
