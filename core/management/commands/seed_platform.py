@@ -65,6 +65,8 @@ class Command(BaseCommand):
 
         Setting.objects.get_or_create(key='advance.default_basis_points', defaults={'value': settings.DEFAULT_ADVANCE_BASIS_POINTS,
                                       'description': 'Default advance % in basis points (3000 = 30%). PLACEHOLDER: set the real business value.'})
+        from content.site_settings import ensure_homepage_stats
+        ensure_homepage_stats()
         Setting.objects.get_or_create(key='balance.default_due_days_before', defaults={'value': settings.DEFAULT_BALANCE_DUE_DAYS_BEFORE,
                                       'description': 'Balance due this many days before departure. PLACEHOLDER: set the real business value.'})
         BusinessEntity.objects.get_or_create(legal_name='GoHyderabad (set legal name)', defaults={'is_default': True})

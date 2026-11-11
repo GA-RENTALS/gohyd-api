@@ -60,6 +60,12 @@ class TripAdmin(PublishableAdmin):
         qs.update(operational_status=m.Trip.Operational.OPEN)
 
 
+@admin.register(m.EventTranslation)
+class EventTranslationAdmin(ApprovalActionsMixin, ModelAdmin):
+    list_display = ('event', 'language', 'title', 'status')
+    list_filter = ('language', 'status')
+
+
 @admin.register(m.TripTranslation)
 class TripTranslationAdmin(ApprovalActionsMixin, SimpleHistoryAdmin, ModelAdmin):
     list_display = ('trip', 'language', 'title', 'status')
@@ -90,16 +96,74 @@ class EventItineraryInline(TabularInline):
     extra = 0
 
 
+class EventFormatDetailInline(TabularInline):
+    model = m.EventFormatDetail
+    extra = 0
+    fields = ('label_en', 'value_en', 'label_te', 'value_te', 'label_hi', 'value_hi', 'sort_order')
+
+
+class EventHighlightInline(TabularInline):
+    model = m.EventHighlight
+    extra = 0
+    fields = ('text_en', 'text_te', 'text_hi', 'sort_order')
+
+
+class EventFAQInline(StackedInline):
+    model = m.EventFAQ
+    extra = 0
+
+
+class EventRuleInline(TabularInline):
+    model = m.EventRule
+    extra = 0
+    fields = ('text_en', 'text_te', 'text_hi', 'sort_order')
+
+
+@admin.register(m.EventRegistration)
+class EventRegistrationAdmin(ModelAdmin):
+    list_display = ('reference', 'contact_name', 'contact_phone', 'schedule', 'participant_count', 'total_amount',
+                    'status', 'reserved_until', 'created_at')
+    list_filter = ('status', 'source', 'schedule__event')
+    search_fields = ('reference', 'contact_name', 'contact_phone')
+    readonly_fields = ('reference', 'total_amount', 'confirmed_at', 'cancelled_at', 'created_at')
+    actions = ('confirm_bookings', 'cancel_bookings')
+
+    @admin.action(description='Confirm selected bookings')
+    def confirm_bookings(self, request, queryset):
+        from django.core.exceptions import ValidationError
+        done, failed = 0, []
+        for booking in queryset.exclude(status=m.EventRegistration.Status.CONFIRMED):
+            booking.status = m.EventRegistration.Status.CONFIRMED
+            try:
+                booking.full_clean()
+                booking.save()
+                done += 1
+            except ValidationError as exc:
+                failed.append(f'{booking.reference}: {"; ".join(exc.messages)}')
+        self.message_user(request, f'{done} booking(s) confirmed.' + (f' Not confirmed — {" | ".join(failed)}' if failed else ''))
+
+    @admin.action(description='Cancel selected bookings (releases slots)')
+    def cancel_bookings(self, request, queryset):
+        n = 0
+        for booking in queryset.exclude(status=m.EventRegistration.Status.CANCELLED):
+            booking.status = m.EventRegistration.Status.CANCELLED
+            booking.save()
+            n += 1
+        self.message_user(request, f'{n} booking(s) cancelled.')
+
+
 @admin.register(m.Event)
 class EventAdmin(PublishableAdmin):
-    list_display = ('slug', 'category', 'price', 'is_featured', 'status')
-    list_filter = ('status', 'is_featured', 'category')
+    list_display = ('slug', 'category', 'price', 'is_featured', 'show_in_popup', 'popup_order', 'status')
+    list_filter = ('status', 'is_featured', 'show_in_popup', 'category')
+    list_editable = ('show_in_popup', 'popup_order')
     search_fields = ('slug', 'translations__title')
-    inlines = [EventTranslationInline, EventScheduleInline, EventItineraryInline]
+    inlines = [EventTranslationInline, EventScheduleInline, EventHighlightInline, EventFormatDetailInline,
+               EventItineraryInline, EventRuleInline, EventFAQInline]
 
 
 for model in (m.TripCategory, m.TripPricingRule, m.TripItinerary, m.TripThingToBring, m.TripAssignment,
               m.EventItineraryItem, m.EventThingToBring, m.EventInclusion, m.EventExclusion,
-              m.EventRegistration, m.EventParticipant, m.EventAttendance):
+              m.EventParticipant, m.EventAttendance):
     admin.site.register(model, type(f'{model.__name__}Admin', (ModelAdmin,), {}))
 admin.site.register(m.TripStatusHistory, type('TripStatusHistoryAdmin', (ModelAdmin,), {'has_add_permission': lambda s, r: False}))

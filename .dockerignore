@@ -1,0 +1,8 @@
+# Keep local-only files and secrets out of the Docker image.
+# (.env is supplied at runtime by docker-compose `env_file`.)
+venv/
+.env.local
+.env.bak-*
+__pycache__/
+*.pyc
+.git/

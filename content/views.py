@@ -1,5 +1,7 @@
 from rest_framework import viewsets
 from rest_framework.permissions import AllowAny
+from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from . import models as m
 from . import serializers as s
@@ -48,3 +50,13 @@ class TestimonialViewSet(LangMixin, viewsets.ReadOnlyModelViewSet):
     pagination_class = None
     queryset = m.Testimonial.objects.filter(is_published=True)
     lookup_field = 'pk'
+
+
+class SiteSettingsView(APIView):
+    """Public homepage values edited in Business settings (only allow-listed keys; see content/site_settings.py)."""
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request):
+        from .site_settings import clean_stats, ensure_homepage_stats
+        return Response({'homepage_stats': clean_stats(ensure_homepage_stats().value)})

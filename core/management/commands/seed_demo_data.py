@@ -5,6 +5,7 @@ Idempotent: re-running only fills tables that are still empty. Nothing is sent t
 """
 import datetime as dt
 import decimal
+import io
 import uuid
 from datetime import timedelta
 
@@ -217,5 +218,15 @@ class Command(BaseCommand):
         if isinstance(f, models.JSONField):
             return {}
         if isinstance(f, models.FileField):
+            if model.__name__ == 'MediaAsset' and n == 'file':
+                from PIL import Image, ImageDraw
+
+                image = Image.new('RGB', (320, 180), (231, 225, 207))
+                draw = ImageDraw.Draw(image)
+                draw.rectangle((0, 125, 319, 179), fill=(60, 77, 49))
+                draw.text((18, 78), 'DEMO IMAGE', fill=(26, 31, 23))
+                buffer = io.BytesIO()
+                image.save(buffer, format='PNG')
+                return ContentFile(buffer.getvalue(), name=f'demo-{tag}.png')
             return ContentFile(b'demo', name=f'demo-{tag}.txt')
         raise TypeError(f'no demo value for {model.__name__}.{n} ({type(f).__name__})')

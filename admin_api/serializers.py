@@ -9,6 +9,7 @@ from rest_framework import serializers
 from accounts.models import User
 from rest_framework.exceptions import ValidationError
 
+from content.models import MediaAsset
 from .registry import Resource
 
 
@@ -172,7 +173,26 @@ def schema_for(resource: Resource, request=None):
             value['many'] = isinstance(field, serializers.ManyRelatedField)
             qs = relation.get_queryset()
             if qs is not None and qs.count() <= 200:
-                value['options'] = [{'value': str(obj.pk), 'label': str(obj)} for obj in qs[:200]]
+                options = []
+                for obj in qs[:200]:
+                    option = {'value': str(obj.pk), 'label': str(obj)}
+                    if isinstance(obj, MediaAsset):
+                        filename = obj.file.name.rsplit('/', 1)[-1] if obj.file else ''
+                        extension = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+                        image_extension = f'.{extension}'
+                        option['label'] = (
+                            f'Invalid image · {filename}' if obj.kind == 'image' and image_extension not in IMAGE_UPLOADS
+                            else obj.alt_text or filename or 'Media asset'
+                        )
+                        option['media_kind'] = obj.kind
+                        if obj.kind == 'image' and image_extension in IMAGE_UPLOADS and obj.file:
+                            try:
+                                image_url = obj.file.url
+                                option['image_preview_url'] = request.build_absolute_uri(image_url) if request else image_url
+                            except (ValueError, OSError):
+                                pass
+                    options.append(option)
+                value['options'] = options
         fields.append(value)
     return {
         'key': resource.key,

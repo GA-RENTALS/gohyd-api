@@ -102,13 +102,17 @@ class TripDetailSerializer(TripListSerializer):
     policies = serializers.SerializerMethodField()
     itineraries = ItinerarySerializer(many=True, read_only=True)
     things_to_bring = serializers.SerializerMethodField()
+    seo_title = serializers.SerializerMethodField()
+    seo_description = serializers.SerializerMethodField()
 
     class Meta(TripListSerializer.Meta):
         fields = TripListSerializer.Meta.fields + ('body', 'schedules', 'pickup_points', 'inclusions', 'exclusions', 'policies',
                                                     'itineraries', 'things_to_bring',
-                                                    'duration_hours', 'difficulty', 'min_age')
+                                                    'duration_hours', 'difficulty', 'min_age', 'seo_title', 'seo_description')
 
     def get_body(self, o): return pick(o, self._lang(), 'body')
+    def get_seo_title(self, o): return pick(o, self._lang(), 'seo_title')
+    def get_seo_description(self, o): return pick(o, self._lang(), 'seo_description')
 
     def get_schedules(self, o):
         return ScheduleSerializer(self._upcoming(o), many=True).data
@@ -119,6 +123,74 @@ class TripDetailSerializer(TripListSerializer):
 
     def get_inclusions(self, o): return self._txt(o.inclusions.all())
     def get_exclusions(self, o): return self._txt(o.exclusions.all())
+    def get_rules(self, o): return self._txt(o.rules.all())
+    def get_highlights(self, o): return self._txt(o.highlights.all())
+    def get_headline(self, o): return pick(o, self._lang(), 'headline')
+    def get_image_caption(self, o): return pick(o, self._lang(), 'image_caption')
+    def get_format_note(self, o): return pick(o, self._lang(), 'format_note')
+    def get_schedule_note(self, o): return pick(o, self._lang(), 'schedule_note')
+    def get_seo_title(self, o): return pick(o, self._lang(), 'seo_title')
+    def get_seo_description(self, o): return pick(o, self._lang(), 'seo_description')
+
+    def get_faqs(self, o):
+        lang = self._lang()
+        return [{'question': getattr(f, f'question_{lang}', '') or f.question_en,
+                 'answer': getattr(f, f'answer_{lang}', '') or f.answer_en} for f in o.faqs.all()]
+
+    def get_format_details(self, o):
+        lang = self._lang()
+        return [{'label': getattr(d, f'label_{lang}', '') or d.label_en, 'value': getattr(d, f'value_{lang}', '') or d.value_en}
+                for d in o.format_details.all()]
+
+
+class EventBookingCreateSerializer(serializers.Serializer):
+    event = serializers.SlugField()
+    schedule = serializers.UUIDField()
+    name = serializers.CharField(max_length=150, trim_whitespace=True)
+    phone = serializers.CharField(max_length=20)
+    email = serializers.EmailField(required=False, allow_blank=True, default='')
+    participant_count = serializers.IntegerField(min_value=1, max_value=500)
+    note = serializers.CharField(max_length=1000, required=False, allow_blank=True, default='')
+    consent_to_contact = serializers.BooleanField()
+
+    def validate_phone(self, value):
+        from django.core.exceptions import ValidationError as DjangoValidationError
+        from accounts.models import normalize_phone
+        try:
+            return normalize_phone(value)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(exc.messages)
+
+    def validate_consent_to_contact(self, value):
+        if not value:
+            raise serializers.ValidationError('Please allow us to contact you to confirm the booking.')
+        return value
+
+
+class EventBookingSerializer(serializers.ModelSerializer):
+    """What the visitor sees about their own booking. Pending holds are never reported as confirmed."""
+    status = serializers.SerializerMethodField()
+    status_label = serializers.SerializerMethodField()
+    event_slug = serializers.CharField(source='schedule.event.slug')
+    event_title = serializers.SerializerMethodField()
+    starts_at = serializers.DateTimeField(source='schedule.starts_at')
+    ends_at = serializers.DateTimeField(source='schedule.ends_at')
+    time_tbd = serializers.BooleanField(source='schedule.time_tbd')
+    venue = serializers.SerializerMethodField()
+    booking_whatsapp_number = serializers.CharField(source='schedule.event.booking_whatsapp_number')
+    seats_left = serializers.SerializerMethodField()
+
+    class Meta:
+        model = m.EventRegistration
+        fields = ('reference', 'status', 'status_label', 'contact_name', 'participant_count', 'unit_price',
+                  'total_amount', 'reserved_until', 'confirmed_at', 'created_at', 'event_slug', 'event_title',
+                  'starts_at', 'ends_at', 'time_tbd', 'venue', 'booking_whatsapp_number', 'seats_left')
+
+    def get_status(self, o): return o.effective_status
+    def get_status_label(self, o): return m.EventRegistration.Status(o.effective_status).label
+    def get_event_title(self, o): return pick(o.schedule.event, self.context.get('lang', 'en'), 'title')
+    def get_venue(self, o): return o.schedule.event.venue_address or o.schedule.event.venue_name
+    def get_seats_left(self, o): return o.schedule.seats_left()
     def get_policies(self, o): return [{'days_before': p.days_before, 'refund_basis_points': p.refund_basis_points, 'note': p.note} for p in o.policies.all()]
     def get_things_to_bring(self, o):
         lang = self.context.get('lang', 'en')
@@ -126,21 +198,31 @@ class TripDetailSerializer(TripListSerializer):
 
 
 class EventScheduleSerializer(serializers.ModelSerializer):
+    seats_left = serializers.SerializerMethodField()
+
     class Meta:
         model = m.EventSchedule
-        fields = ('id', 'starts_at', 'ends_at', 'capacity', 'is_date_locked', 'time_tbd')
+        fields = ('id', 'starts_at', 'ends_at', 'capacity', 'seats_left', 'is_date_locked', 'time_tbd')
+
+    def get_seats_left(self, o):
+        return o.seats_left()
 
 
 class EventItineraryItemSerializer(serializers.ModelSerializer):
     text = serializers.SerializerMethodField()
+    detail = serializers.SerializerMethodField()
 
     class Meta:
         model = m.EventItineraryItem
-        fields = ('id', 'time_label', 'text')
+        fields = ('id', 'time_label', 'text', 'detail')
 
     def get_text(self, o):
         lang = self.context.get('lang', 'en')
         return getattr(o, f'text_{lang}', '') or o.text_en
+
+    def get_detail(self, o):
+        lang = self.context.get('lang', 'en')
+        return getattr(o, f'detail_{lang}', '') or o.detail_en
 
 
 class EventItinerarySerializer(serializers.ModelSerializer):
@@ -164,11 +246,14 @@ class EventListSerializer(serializers.ModelSerializer):
     cover_url = serializers.SerializerMethodField()
     next_date = serializers.SerializerMethodField()
     next_time_tbd = serializers.SerializerMethodField()
+    next_seats_left = serializers.SerializerMethodField()
+    popup_banner_url = serializers.SerializerMethodField()
 
     class Meta:
         model = m.Event
         fields = ('id', 'slug', 'title', 'summary', 'category', 'category_slug', 'price', 'cover_url', 'next_date',
-                  'next_time_tbd', 'is_featured', 'booking_whatsapp_number')
+                  'next_time_tbd', 'is_featured', 'booking_whatsapp_number', 'show_in_popup', 'popup_order',
+                  'popup_banner_url', 'next_seats_left', 'registration_type', 'max_participants_per_booking')
 
     def _lang(self): return self.context.get('lang', 'en')
     def get_title(self, o): return pick(o, self._lang(), 'title')
@@ -176,12 +261,18 @@ class EventListSerializer(serializers.ModelSerializer):
     def get_category(self, o):
         return (getattr(o.category, f'name_{self._lang()}', '') or o.category.name) if o.category_id else ''
 
-    def get_cover_url(self, o):
-        if not o.cover_id or not o.cover.file:
+    def _asset_url(self, asset):
+        if asset is None or not asset.file:
             return None
-        url = o.cover.file.url
+        url = asset.file.url
         request = self.context.get('request')
         return request.build_absolute_uri(url) if request else url
+
+    def get_cover_url(self, o):
+        return self._asset_url(o.cover) if o.cover_id else None
+
+    def get_popup_banner_url(self, o):
+        return self._asset_url(o.popup_banner) if o.popup_banner_id else None
 
     def _upcoming(self, o):
         from django.utils import timezone
@@ -199,6 +290,10 @@ class EventListSerializer(serializers.ModelSerializer):
     def _next_schedule(self, o):
         return min(self._upcoming(o), key=lambda schedule: schedule.starts_at, default=None)
 
+    def get_next_seats_left(self, o):
+        schedule = self._next_schedule(o)
+        return schedule.seats_left() if schedule else None
+
     def get_next_time_tbd(self, o):
         schedule = self._next_schedule(o)
         return schedule.time_tbd if schedule else False
@@ -214,10 +309,24 @@ class EventDetailSerializer(EventListSerializer):
     things_to_bring = serializers.SerializerMethodField()
     inclusions = serializers.SerializerMethodField()
     exclusions = serializers.SerializerMethodField()
+    format_details = serializers.SerializerMethodField()
+    rules = serializers.SerializerMethodField()
+    highlights = serializers.SerializerMethodField()
+    faqs = serializers.SerializerMethodField()
+    headline = serializers.SerializerMethodField()
+    image_caption = serializers.SerializerMethodField()
+    format_note = serializers.SerializerMethodField()
+    schedule_note = serializers.SerializerMethodField()
+    seo_title = serializers.SerializerMethodField()
+    seo_description = serializers.SerializerMethodField()
+    reservation_hold_hours = serializers.IntegerField(read_only=True)
 
     class Meta(EventListSerializer.Meta):
         fields = EventListSerializer.Meta.fields + ('body', 'venue_name', 'venue_address', 'schedules', 'itineraries',
-                                                    'things_to_bring', 'inclusions', 'exclusions')
+                                                    'things_to_bring', 'inclusions', 'exclusions', 'format_details',
+                                                    'rules', 'reservation_hold_hours', 'highlights', 'faqs',
+                                                    'headline', 'image_caption', 'format_note', 'schedule_note',
+                                                    'seo_title', 'seo_description')
 
     def get_body(self, o): return pick(o, self._lang(), 'body')
     def get_schedules(self, o): return EventScheduleSerializer(self._upcoming(o), many=True).data

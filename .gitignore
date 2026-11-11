@@ -4,3 +4,5 @@ __pycache__/
 *.pyc
 staticfiles/
 media/
+.env.local
+.env.bak-*

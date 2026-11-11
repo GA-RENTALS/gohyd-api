@@ -1,5 +1,11 @@
-from rest_framework import viewsets
+from django.core.exceptions import ValidationError as DjangoValidationError
+from drf_spectacular.utils import extend_schema
+from rest_framework import status, viewsets
 from rest_framework.permissions import AllowAny
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from core.throttling import TrustedScopedRateThrottle
 
 from content.models import ContentStatus
 from content.views import LangMixin
@@ -35,12 +41,59 @@ class TripCategoryViewSet(viewsets.ReadOnlyModelViewSet):
 
 class EventViewSet(LangMixin, viewsets.ReadOnlyModelViewSet):
     """Published public event details; slot confirmation is handled through CRM enquiries for now."""
-    filterset_fields = ['category__slug']
+    filterset_fields = ['category__slug', 'show_in_popup', 'is_featured']
     search_fields = ['slug', 'translations__title']
     queryset = (m.Event.objects.filter(status=ContentStatus.PUBLISHED)
-                .select_related('cover', 'category')
+                .select_related('cover', 'popup_banner', 'category')
                 .prefetch_related('translations', 'schedules', 'itineraries__items', 'things_to_bring',
-                                  'inclusions', 'exclusions').distinct())
+                                  'inclusions', 'exclusions', 'format_details', 'rules', 'highlights',
+                                  'faqs').distinct())
 
     def get_serializer_class(self):
         return s.EventDetailSerializer if self.action == 'retrieve' else s.EventListSerializer
+
+
+class EventBookingCreateView(APIView):
+    """Holds slots for an individual or group on a published event date. Staff confirm the booking afterwards."""
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    throttle_classes = [TrustedScopedRateThrottle]
+    throttle_scope = 'enquiry'
+
+    @extend_schema(tags=['Events'], request=s.EventBookingCreateSerializer, responses=s.EventBookingSerializer)
+    def post(self, request):
+        from .event_booking import create_event_booking
+        data = s.EventBookingCreateSerializer(data=request.data)
+        data.is_valid(raise_exception=True)
+        v = data.validated_data
+        try:
+            booking = create_event_booking(
+                event_slug=v['event'], schedule_id=v['schedule'], name=v['name'], phone=v['phone'], email=v.get('email', ''),
+                participant_count=v['participant_count'], note=v.get('note', ''))
+        except DjangoValidationError as exc:
+            detail = exc.message_dict if hasattr(exc, 'error_dict') else {'detail': exc.messages}
+            return Response(detail, status=status.HTTP_400_BAD_REQUEST)
+        return Response(s.EventBookingSerializer(booking, context={'lang': request.query_params.get('lang', 'en')}).data,
+                        status=status.HTTP_201_CREATED)
+
+
+class EventBookingStatusView(APIView):
+    """Look up one booking by reference. The phone used to book must match, so references cannot be enumerated."""
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    throttle_classes = [TrustedScopedRateThrottle]
+    throttle_scope = 'enquiry'
+
+    @extend_schema(tags=['Events'], responses=s.EventBookingSerializer)
+    def get(self, request, reference):
+        from accounts.models import normalize_phone
+        not_found = Response({'detail': 'No booking matches that reference and phone number.'}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            phone = normalize_phone(request.query_params.get('phone', ''))
+        except DjangoValidationError:
+            return not_found
+        booking = (m.EventRegistration.objects.select_related('schedule__event')
+                   .filter(reference=reference.strip().upper(), contact_phone=phone).first())
+        if booking is None:
+            return not_found
+        return Response(s.EventBookingSerializer(booking, context={'lang': request.query_params.get('lang', 'en')}).data)

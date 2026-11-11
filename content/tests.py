@@ -54,3 +54,31 @@ class ImportFrontendContentCommandTests(TestCase):
             for option in action.option_strings
         }
         self.assertNotIn('--publish', option_strings)
+
+
+class HomepageSiteSettingsTests(TenantTestCase):
+    def test_stats_setting_is_created_with_defaults_and_editable(self):
+        from rest_framework.test import APIClient
+        from core.models import Setting
+        r = APIClient().get('/api/v1/site-settings/')
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(len(r.data['homepage_stats']), 4)
+        setting = Setting.objects.get(key='homepage.stats')
+        setting.value = [{'value': 20, 'suffix': '+', 'label': 'Real number'}, {'value': 'oops', 'label': 'bad'}, 'junk']
+        setting.save()
+        stats = APIClient().get('/api/v1/site-settings/').data['homepage_stats']
+        self.assertEqual(stats, [{'value': 20, 'label': 'Real number', 'suffix': '+', 'decimals': 0}])
+
+    def test_only_allow_listed_settings_are_public(self):
+        from rest_framework.test import APIClient
+        from core.models import Setting
+        Setting.objects.create(key='advance.default_basis_points', value=3000)
+        self.assertEqual(set(APIClient().get('/api/v1/site-settings/').data), {'homepage_stats'})
+
+    def test_only_published_testimonials_are_listed(self):
+        from rest_framework.test import APIClient
+        from .models import Testimonial
+        Testimonial.objects.create(author_name='Shown', quote_en='Great', is_published=True)
+        Testimonial.objects.create(author_name='Hidden', quote_en='Draft')
+        names = [t['author_name'] for t in APIClient().get('/api/v1/testimonials/?lang=en').data]
+        self.assertEqual(names, ['Shown'])

@@ -113,8 +113,22 @@ class MediaAsset(UUIDModel, Timestamped):
     class Meta:
         db_table = 'media_assets'
 
+    def clean(self):
+        super().clean()
+        extension = self.file.name.rsplit('.', 1)[-1].lower() if self.file and '.' in self.file.name else ''
+        allowed_by_kind = {
+            'image': {'jpg', 'jpeg', 'png', 'webp', 'gif'},
+            'video': {'mp4'},
+            'doc': {'pdf', 'csv', 'txt', 'doc', 'docx', 'xls', 'xlsx'},
+        }
+        if extension and extension not in allowed_by_kind.get(self.kind, set()):
+            raise ValidationError({'file': f"Choose a file type that matches the selected '{self.kind}' media kind."})
+
     def __str__(self):
-        return self.file.name
+        if self.alt_text:
+            return self.alt_text
+        filename = self.file.name.rsplit('/', 1)[-1] if self.file and self.file.name else ''
+        return filename or f'{self.kind.title()} asset'
 
 
 # ---- 13.2 Destinations ----
@@ -160,6 +174,9 @@ class DestinationTranslation(TranslationBase):
     class Meta:
         db_table = 'destination_translations'
         unique_together = ('destination', 'language')
+
+    def __str__(self):
+        return f'{self.destination.slug} [{self.language}] {self.title}'
 
 
 class DestinationMedia(Timestamped):
@@ -290,6 +307,9 @@ class Testimonial(Timestamped):
 
     class Meta:
         db_table = 'testimonials'
+
+    def __str__(self):
+        return f'{self.author_name} · {self.author_role}' if self.author_role else self.author_name
 
 
 class Gallery(Timestamped):
