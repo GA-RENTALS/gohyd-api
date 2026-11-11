@@ -1,7 +1,9 @@
 """Trips, schedules, pricing, capacity, itineraries, pickup points, events (sections 13.3, 3.1-3.3)."""
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
+from django.utils import timezone
 from simple_history.models import HistoricalRecords
 
 from content.models import Destination, MediaAsset, Publishable, TranslationBase
@@ -208,6 +210,19 @@ class TripExclusion(TenantBound):
         db_table = 'trip_exclusions'
 
 
+class TripThingToBring(TenantBound):
+    """An item guests should bring on this trip, translated for the public detail page."""
+    trip = models.ForeignKey(Trip, on_delete=models.CASCADE, related_name='things_to_bring')
+    text_en = models.CharField(max_length=255)
+    text_te = models.CharField(max_length=255, blank=True)
+    text_hi = models.CharField(max_length=255, blank=True)
+    sort_order = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        db_table = 'trip_things_to_bring'
+        ordering = ['sort_order', 'id']
+
+
 class TripPolicy(Timestamped):
     """Refund policy as tiers: refund_percent if cancelled at least `days_before` days before departure."""
     trip = models.ForeignKey(Trip, on_delete=models.CASCADE, related_name='policies')
@@ -252,6 +267,8 @@ class Event(UUIDModel, Timestamped, Publishable):
     venue_address = models.TextField(blank=True)
     cover = models.ForeignKey(MediaAsset, null=True, blank=True, on_delete=models.SET_NULL, related_name='+')
     price = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    is_featured = models.BooleanField(default=False, db_index=True)
+    booking_whatsapp_number = models.CharField(max_length=20, blank=True)
     history = HistoricalRecords()
 
     class Meta:
@@ -272,15 +289,98 @@ class EventTranslation(TranslationBase):
         unique_together = ('event', 'language')
 
 
+class EventItinerary(Timestamped):
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='itineraries')
+    day_number = models.PositiveSmallIntegerField(default=1)
+    title_en = models.CharField(max_length=200)
+    title_te = models.CharField(max_length=200, blank=True)
+    title_hi = models.CharField(max_length=200, blank=True)
+
+    class Meta:
+        db_table = 'event_itineraries'
+        ordering = ['day_number']
+
+
+class EventItineraryItem(TenantBound):
+    itinerary = models.ForeignKey(EventItinerary, on_delete=models.CASCADE, related_name='items')
+    time_label = models.CharField(max_length=30, blank=True)
+    text_en = models.TextField()
+    text_te = models.TextField(blank=True)
+    text_hi = models.TextField(blank=True)
+    sort_order = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        db_table = 'event_itinerary_items'
+        ordering = ['sort_order']
+
+
+class EventThingToBring(TenantBound):
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='things_to_bring')
+    text_en = models.CharField(max_length=255)
+    text_te = models.CharField(max_length=255, blank=True)
+    text_hi = models.CharField(max_length=255, blank=True)
+    sort_order = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        db_table = 'event_things_to_bring'
+        ordering = ['sort_order', 'id']
+
+
+class EventInclusion(TenantBound):
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='inclusions')
+    text_en = models.CharField(max_length=255)
+    text_te = models.CharField(max_length=255, blank=True)
+    text_hi = models.CharField(max_length=255, blank=True)
+    sort_order = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        db_table = 'event_inclusions'
+        ordering = ['sort_order', 'id']
+
+
+class EventExclusion(TenantBound):
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='exclusions')
+    text_en = models.CharField(max_length=255)
+    text_te = models.CharField(max_length=255, blank=True)
+    text_hi = models.CharField(max_length=255, blank=True)
+    sort_order = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        db_table = 'event_exclusions'
+        ordering = ['sort_order', 'id']
+
+
 class EventSchedule(UUIDModel):
     event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='schedules')
     starts_at = models.DateTimeField(db_index=True)
     ends_at = models.DateTimeField(null=True, blank=True)
     capacity = models.PositiveIntegerField(null=True, blank=True)
+    is_date_locked = models.BooleanField(default=False)
+    time_tbd = models.BooleanField(default=False)
 
     class Meta:
         db_table = 'event_schedules'
         ordering = ['starts_at']
+
+    def clean(self):
+        super().clean()
+        if self.pk:
+            previous = type(self)._base_manager.filter(pk=self.pk).only(
+                'starts_at', 'ends_at', 'is_date_locked',
+            ).first()
+            if previous and previous.is_date_locked:
+                if not self.is_date_locked:
+                    raise ValidationError({'is_date_locked': 'A locked event date cannot be unlocked.'})
+                if timezone.localtime(previous.starts_at).date() != timezone.localtime(self.starts_at).date():
+                    raise ValidationError({'starts_at': 'This event date is locked and cannot be changed.'})
+                old_end_date = timezone.localtime(previous.ends_at).date() if previous.ends_at else None
+                new_end_date = timezone.localtime(self.ends_at).date() if self.ends_at else None
+                if old_end_date != new_end_date:
+                    raise ValidationError({'ends_at': 'This event date is locked and cannot be changed.'})
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
 
 
 class EventRegistration(UUIDModel, Timestamped):

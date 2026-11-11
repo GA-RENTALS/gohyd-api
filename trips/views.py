@@ -14,7 +14,8 @@ class TripViewSet(LangMixin, viewsets.ReadOnlyModelViewSet):
     ordering_fields = ['sort_order', 'created_at']
     queryset = (m.Trip.objects.filter(status=ContentStatus.PUBLISHED)
                 .select_related('cover')
-                .prefetch_related('translations', 'schedules', 'categories', 'pickup_points', 'inclusions', 'exclusions', 'policies').distinct())
+                .prefetch_related('translations', 'schedules', 'categories', 'pickup_points', 'inclusions', 'exclusions',
+                                  'policies', 'itineraries__items', 'things_to_bring').distinct())
 
     def get_serializer_class(self):
         return s.TripDetailSerializer if self.action == 'retrieve' else s.TripListSerializer
@@ -30,3 +31,16 @@ class TripCategoryViewSet(viewsets.ReadOnlyModelViewSet):
         lang = request.query_params.get('lang', 'en')
         return __import__('rest_framework.response', fromlist=['Response']).Response(
             [{'slug': c.slug, 'name': getattr(c, f'name_{lang}', '') or c.name} for c in self.get_queryset()])
+
+
+class EventViewSet(LangMixin, viewsets.ReadOnlyModelViewSet):
+    """Published public event details; slot confirmation is handled through CRM enquiries for now."""
+    filterset_fields = ['category__slug']
+    search_fields = ['slug', 'translations__title']
+    queryset = (m.Event.objects.filter(status=ContentStatus.PUBLISHED)
+                .select_related('cover', 'category')
+                .prefetch_related('translations', 'schedules', 'itineraries__items', 'things_to_bring',
+                                  'inclusions', 'exclusions').distinct())
+
+    def get_serializer_class(self):
+        return s.EventDetailSerializer if self.action == 'retrieve' else s.EventListSerializer

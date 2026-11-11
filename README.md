@@ -203,8 +203,11 @@ Base: `/api/v1/`. Full interactive documentation: `/api/docs/`.
 | Path | Returns |
 |---|---|
 | `trips/`, `trips/<slug>/` | Published trips; detail has schedules with seats left, pickup points, inclusions, refund tiers. Add `?lang=en|te|hi`. |
+| `events/`, `events/<slug>/` | Published events; detail has venue, schedules, itinerary, things to bring, inclusions and exclusions. Add `?lang=en|te|hi`. |
 | `categories/` | Trip categories. |
 | `destinations/`, `blogs/`, `pages/`, `faqs/`, `testimonials/` | Published content. |
+
+`POST enquiries/` accepts event booking requests from the public website and saves them in CRM. It stores the Event and selected date or preferred date, group size, contact details, and consent. This is a follow-up request, not a seat reservation or payment.
 
 ### Booking (signed-in customer)
 

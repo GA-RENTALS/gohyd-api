@@ -40,9 +40,10 @@ from tracking.models import (AnalyticsDailySummary, AnalyticsEventDefinition, Cu
                              FinancialPerformanceSummary, KpiDefinition, MarketingAttributionSummary,
                              OperationalPerformanceSummary, ReportDefinition, ReportExecutionHistory,
                              ScheduledReport, TripPerformanceSummary)
-from trips.models import (TripAssignment, TripCategoryLink, TripExclusion, TripStatusHistory)
-from trips.models import (Event, EventAttendance, EventParticipant, EventRegistration, EventSchedule,
-                          EventTranslation, Trip, TripCategory, TripDestination, TripInclusion, TripItinerary,
+from trips.models import (TripAssignment, TripCategoryLink, TripExclusion, TripStatusHistory, TripThingToBring)
+from trips.models import (Event, EventAttendance, EventExclusion, EventInclusion, EventItinerary,
+                          EventItineraryItem, EventParticipant, EventRegistration, EventSchedule,
+                          EventThingToBring, EventTranslation, Trip, TripCategory, TripDestination, TripInclusion, TripItinerary,
                           TripItineraryItem, TripMedia, TripPickupPoint, TripPolicy, TripPricingRule,
                           TripSchedule, TripTranslation)
 
@@ -81,10 +82,16 @@ RESOURCES = {
         _r('trip-policies', 'trips', 'Policies', TripPolicy),
         _r('trip-media', 'trips', 'Trip media', TripMedia),
         _r('trip-inclusions', 'trips', 'Inclusions', TripInclusion),
+        _r('trip-things-to-bring', 'trips', 'Things to bring', TripThingToBring),
         _r('trip-destinations', 'trips', 'Trip destinations', TripDestination),
         _r('events', 'trips', 'Events', Event, search_fields=('slug',), read_only_fields=('status', 'publish_at', 'published_at')),
         _r('event-schedules', 'trips', 'Event schedules', EventSchedule),
         _r('event-translations', 'trips', 'Event translations', EventTranslation, read_only_fields=('status', 'reviewed_by', 'approved_at')),
+        _r('event-itineraries', 'trips', 'Event itineraries', EventItinerary, search_fields=('event__slug',)),
+        _r('event-itinerary-items', 'trips', 'Event itinerary items', EventItineraryItem),
+        _r('event-things-to-bring', 'trips', 'Event things to bring', EventThingToBring),
+        _r('event-inclusions', 'trips', 'Event inclusions', EventInclusion),
+        _r('event-exclusions', 'trips', 'Event exclusions', EventExclusion),
         _r('event-registrations', 'bookings', 'Event registrations', EventRegistration, mode='read', personal_data=True),
         _r('event-participants', 'participants', 'Event participants', EventParticipant, mode='update', personal_data=True),
         _r('event-attendance', 'participants', 'Event attendance', EventAttendance, mode='update', personal_data=True),
@@ -155,7 +162,7 @@ RESOURCES = {
         _r('emergency-escalations', 'logistics', 'Emergency escalations', EmergencyEscalation),
         _r('trip-completion-reports', 'logistics', 'Completion reports', TripCompletionReport),
         # CRM, marketing and memberships
-        _r('enquiries', 'crm', 'Enquiries', Enquiry, search_fields=('name', 'phone', 'email'), personal_data=True),
+        _r('enquiries', 'crm', 'Enquiries', Enquiry, search_fields=('name', 'phone', 'email', 'message', 'event__slug', 'event_schedule__event__slug'), personal_data=True),
         _r('enquiry-sources', 'crm', 'Enquiry sources', EnquirySource),
         _r('enquiry-assignments', 'crm', 'Enquiry assignments', EnquiryAssignment, personal_data=True),
         _r('enquiry-followups', 'crm', 'Follow-ups', EnquiryFollowup, personal_data=True),

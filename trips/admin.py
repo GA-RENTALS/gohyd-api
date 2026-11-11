@@ -82,14 +82,24 @@ class EventTranslationInline(StackedInline):
 class EventScheduleInline(TabularInline):
     model = m.EventSchedule
     extra = 0
+    fields = ('starts_at', 'ends_at', 'capacity', 'is_date_locked', 'time_tbd')
+
+
+class EventItineraryInline(TabularInline):
+    model = m.EventItinerary
+    extra = 0
 
 
 @admin.register(m.Event)
 class EventAdmin(PublishableAdmin):
-    list_display = ('slug', 'category', 'status')
-    inlines = [EventTranslationInline, EventScheduleInline]
+    list_display = ('slug', 'category', 'price', 'is_featured', 'status')
+    list_filter = ('status', 'is_featured', 'category')
+    search_fields = ('slug', 'translations__title')
+    inlines = [EventTranslationInline, EventScheduleInline, EventItineraryInline]
 
 
-for model in (m.TripCategory, m.TripPricingRule, m.TripItinerary, m.TripAssignment, m.EventRegistration, m.EventParticipant, m.EventAttendance):
+for model in (m.TripCategory, m.TripPricingRule, m.TripItinerary, m.TripThingToBring, m.TripAssignment,
+              m.EventItineraryItem, m.EventThingToBring, m.EventInclusion, m.EventExclusion,
+              m.EventRegistration, m.EventParticipant, m.EventAttendance):
     admin.site.register(model, type(f'{model.__name__}Admin', (ModelAdmin,), {}))
 admin.site.register(m.TripStatusHistory, type('TripStatusHistoryAdmin', (ModelAdmin,), {'has_add_permission': lambda s, r: False}))

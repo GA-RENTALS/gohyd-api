@@ -1,6 +1,6 @@
 """CRM, support, corporate, marketing, memberships, loyalty (sections 13.7, 13.11, 13.12)."""
 from django.conf import settings
-from django.core.validators import MaxValueValidator
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 
 from core.models import TenantBound, Timestamped, UUIDModel
@@ -32,6 +32,10 @@ class Enquiry(UUIDModel, Timestamped):
     email = models.EmailField(blank=True)
     message = models.TextField(blank=True)
     trip = models.ForeignKey('trips.Trip', null=True, blank=True, on_delete=models.SET_NULL, related_name='enquiries')
+    event = models.ForeignKey('trips.Event', null=True, blank=True, on_delete=models.SET_NULL, related_name='enquiries')
+    event_schedule = models.ForeignKey('trips.EventSchedule', null=True, blank=True, on_delete=models.SET_NULL, related_name='enquiries')
+    preferred_date = models.DateField(null=True, blank=True)
+    group_size = models.PositiveSmallIntegerField(null=True, blank=True, validators=[MinValueValidator(1), MaxValueValidator(30)])
     source = models.ForeignKey(EnquirySource, null=True, blank=True, on_delete=models.SET_NULL, related_name='enquiries')
     status = models.CharField(max_length=12, choices=Status.choices, default=Status.NEW, db_index=True)
     visitor = models.ForeignKey('tracking.Visitor', null=True, blank=True, on_delete=models.SET_NULL, related_name='enquiries')
