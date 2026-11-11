@@ -123,24 +123,11 @@ class TripDetailSerializer(TripListSerializer):
 
     def get_inclusions(self, o): return self._txt(o.inclusions.all())
     def get_exclusions(self, o): return self._txt(o.exclusions.all())
-    def get_rules(self, o): return self._txt(o.rules.all())
-    def get_highlights(self, o): return self._txt(o.highlights.all())
-    def get_headline(self, o): return pick(o, self._lang(), 'headline')
-    def get_image_caption(self, o): return pick(o, self._lang(), 'image_caption')
-    def get_format_note(self, o): return pick(o, self._lang(), 'format_note')
-    def get_schedule_note(self, o): return pick(o, self._lang(), 'schedule_note')
-    def get_seo_title(self, o): return pick(o, self._lang(), 'seo_title')
-    def get_seo_description(self, o): return pick(o, self._lang(), 'seo_description')
+    def get_things_to_bring(self, o): return self._txt(o.things_to_bring.all())
 
-    def get_faqs(self, o):
-        lang = self._lang()
-        return [{'question': getattr(f, f'question_{lang}', '') or f.question_en,
-                 'answer': getattr(f, f'answer_{lang}', '') or f.answer_en} for f in o.faqs.all()]
-
-    def get_format_details(self, o):
-        lang = self._lang()
-        return [{'label': getattr(d, f'label_{lang}', '') or d.label_en, 'value': getattr(d, f'value_{lang}', '') or d.value_en}
-                for d in o.format_details.all()]
+    def get_policies(self, o):
+        return [{'days_before': p.days_before, 'refund_basis_points': p.refund_basis_points, 'note': p.note}
+                for p in o.policies.all()]
 
 
 class EventBookingCreateSerializer(serializers.Serializer):
@@ -191,10 +178,6 @@ class EventBookingSerializer(serializers.ModelSerializer):
     def get_event_title(self, o): return pick(o.schedule.event, self.context.get('lang', 'en'), 'title')
     def get_venue(self, o): return o.schedule.event.venue_address or o.schedule.event.venue_name
     def get_seats_left(self, o): return o.schedule.seats_left()
-    def get_policies(self, o): return [{'days_before': p.days_before, 'refund_basis_points': p.refund_basis_points, 'note': p.note} for p in o.policies.all()]
-    def get_things_to_bring(self, o):
-        lang = self.context.get('lang', 'en')
-        return [getattr(item, f'text_{lang}', '') or item.text_en for item in o.things_to_bring.all()]
 
 
 class EventScheduleSerializer(serializers.ModelSerializer):
@@ -338,3 +321,21 @@ class EventDetailSerializer(EventListSerializer):
     def get_things_to_bring(self, o): return self._txt(o.things_to_bring.all())
     def get_inclusions(self, o): return self._txt(o.inclusions.all())
     def get_exclusions(self, o): return self._txt(o.exclusions.all())
+    def get_rules(self, o): return self._txt(o.rules.all())
+    def get_highlights(self, o): return self._txt(o.highlights.all())
+    def get_headline(self, o): return pick(o, self._lang(), 'headline')
+    def get_image_caption(self, o): return pick(o, self._lang(), 'image_caption')
+    def get_format_note(self, o): return pick(o, self._lang(), 'format_note')
+    def get_schedule_note(self, o): return pick(o, self._lang(), 'schedule_note')
+    def get_seo_title(self, o): return pick(o, self._lang(), 'seo_title')
+    def get_seo_description(self, o): return pick(o, self._lang(), 'seo_description')
+
+    def get_faqs(self, o):
+        lang = self._lang()
+        return [{'question': getattr(f, f'question_{lang}', '') or f.question_en,
+                 'answer': getattr(f, f'answer_{lang}', '') or f.answer_en} for f in o.faqs.all()]
+
+    def get_format_details(self, o):
+        lang = self._lang()
+        return [{'label': getattr(d, f'label_{lang}', '') or d.label_en, 'value': getattr(d, f'value_{lang}', '') or d.value_en}
+                for d in o.format_details.all()]
