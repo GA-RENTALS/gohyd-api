@@ -1,0 +1,64 @@
+version: '3.8'
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: gohyd_redis
+    restart: always
+    volumes:
+      - redis_data:/data
+    networks:
+      - gohyd_net
+
+  web:
+    build: .
+    container_name: gohyd_web
+    restart: always
+    env_file:
+      - .env
+    volumes:
+      - static_volume:/app/staticfiles
+      - media_volume:/app/media
+    ports:
+      - "0.0.0.0:8000:8000"
+    depends_on:
+      - redis
+    networks:
+      - gohyd_net
+
+  celery_worker:
+    build: .
+    container_name: gohyd_celery_worker
+    restart: always
+    command: celery -A config worker -l info -P solo
+    env_file:
+      - .env
+    volumes:
+      - media_volume:/app/media
+    depends_on:
+      - redis
+      - web
+    networks:
+      - gohyd_net
+
+  celery_beat:
+    build: .
+    container_name: gohyd_celery_beat
+    restart: always
+    command: celery -A config beat -l info
+    env_file:
+      - .env
+    depends_on:
+      - redis
+      - web
+    networks:
+      - gohyd_net
+
+volumes:
+  redis_data:
+  static_volume:
+  media_volume:
+
+networks:
+  gohyd_net:
+    driver: bridge

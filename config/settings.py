@@ -33,7 +33,11 @@ if DEBUG and 'test' in sys.argv and 'testserver' not in ALLOWED_HOSTS:
 if not DEBUG and not ALLOWED_HOSTS:
     raise ImproperlyConfigured('ALLOWED_HOSTS must be set when DEBUG is False.')
 
-CSRF_TRUSTED_ORIGINS = [o.strip() for o in os.getenv('CSRF_TRUSTED_ORIGINS', '').split(',') if o.strip()]
+CSRF_TRUSTED_ORIGINS =[
+        'http://3.110.175.214',
+    'http://127.0.0.1',
+    'http://localhost'
+    ]+[o.strip() for o in os.getenv('CSRF_TRUSTED_ORIGINS', '').split(',') if o.strip()]
 try:
     TRUSTED_PROXY_NETWORKS = tuple(
         ipaddress.ip_network(ip.strip(), strict=False)
