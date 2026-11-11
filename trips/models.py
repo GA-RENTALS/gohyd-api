@@ -296,6 +296,15 @@ class Event(UUIDModel, Timestamped, Publishable):
     reservation_hold_hours = models.PositiveSmallIntegerField(
         default=24, validators=[MinValueValidator(1), MaxValueValidator(720)],
         help_text='How long an unconfirmed (pending) website booking holds its slots before they are released.')
+    # UPI payment by QR: shown only when a QR image is set. The customer pays, then uploads a screenshot.
+    payment_qr = models.ForeignKey(
+        MediaAsset, null=True, blank=True, on_delete=models.SET_NULL, related_name='+',
+        help_text='UPI QR code image. When set, customers see it after booking and are asked to upload a payment screenshot.')
+    payment_upi_id = models.CharField(max_length=100, blank=True, help_text='UPI ID shown under the QR code, e.g. name@bank.')
+    payment_payee_name = models.CharField(max_length=150, blank=True, help_text='Name the customer should see when paying.')
+    payment_alert_number = models.CharField(
+        max_length=20, blank=True,
+        help_text='WhatsApp number told about each uploaded payment screenshot. Empty = the booking WhatsApp number.')
     history = HistoricalRecords()
 
     class Meta:
@@ -518,6 +527,13 @@ def _new_event_reference():
     return 'GHE-' + ''.join(secrets.choice(alphabet) for _ in range(6))
 
 
+def _payment_screenshot_path(instance, filename):
+    """Random file name: the screenshot has personal payment details, so its address must not be guessable."""
+    import uuid
+    ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else 'jpg'
+    return f'event-payments/{uuid.uuid4().hex}.{ext if ext in ("jpg", "jpeg", "png", "webp") else "jpg"}'
+
+
 class EventRegistration(UUIDModel, Timestamped):
     """One event booking (individual or group). Pending bookings hold slots until `reserved_until`; only staff confirm them."""
 
@@ -546,6 +562,11 @@ class EventRegistration(UUIDModel, Timestamped):
     staff_note = models.TextField(blank=True)
     confirmed_at = models.DateTimeField(null=True, blank=True, editable=False)
     cancelled_at = models.DateTimeField(null=True, blank=True, editable=False)
+    payment_screenshot = models.ImageField(upload_to=_payment_screenshot_path, blank=True,
+                                           help_text='UPI payment screenshot uploaded by the customer. Check it before confirming.')
+    payment_utr = models.CharField('UPI transaction ID', max_length=40, blank=True,
+                                   help_text='UTR / transaction ID the customer typed (optional).')
+    payment_submitted_at = models.DateTimeField(null=True, blank=True, editable=False)
 
     class Meta:
         db_table = 'event_registrations'

@@ -158,6 +158,68 @@ class EventPopupAndBookingTests(TenantTestCase):
         self.assertEqual(r.status_code, 200)
         self.assertIn('box-cricket-community-play-day', str(schedule))
 
+    # ---- UPI payment screenshot ----
+    def _png(self, name='pay.png'):
+        import io
+        from PIL import Image
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        buf = io.BytesIO()
+        Image.new('RGB', (40, 60), 'white').save(buf, 'PNG')
+        return SimpleUploadedFile(name, buf.getvalue(), content_type='image/png')
+
+    def _upload(self, ref, phone='9876543210', file=None, **extra):
+        return APIClient().post(f'/api/v1/event-bookings/{ref}/payment-proof/',
+                                {'phone': phone, 'screenshot': file or self._png(), **extra}, format='multipart')
+
+    def test_event_and_booking_show_the_upi_qr(self):
+        d = APIClient().get(f'/api/v1/events/{self.SLUG}/?lang=en').data
+        self.assertTrue(d['payment']['qr_url'])
+        self.assertEqual(d['payment']['upi_id'], 'paytmqr5kw2z2@ptys')
+        r = self._book(2)
+        self.assertTrue(r.data['payment']['qr_url'])
+        self.assertFalse(r.data['payment_submitted'])
+
+    def test_customer_uploads_screenshot_and_organiser_is_alerted(self):
+        from core.models import OutboxEvent
+        from notifications.models import NotificationJob
+        from notifications.tasks import handle_event_booking_event
+        from .models import EventRegistration
+        ref = self._book(3).data['reference']
+        r = self._upload(ref, utr='412345678901')
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertTrue(r.data['payment_submitted'])
+        booking = EventRegistration.objects.get(reference=ref)
+        self.assertTrue(booking.payment_screenshot.name.startswith('event-payments/'))
+        self.assertNotIn('pay', booking.payment_screenshot.name.split('/')[-1])   # random, unguessable file name
+        self.assertEqual(booking.payment_utr, '412345678901')
+        ev = OutboxEvent.objects.get(type='event_booking.payment_submitted')
+        from unittest import mock
+        with mock.patch('notifications.tasks.deliver.delay') as send:   # don't hand the job to a real worker
+            handle_event_booking_event(str(ev.pk), ev.type, ev.aggregate_id, ev.payload, str(self.tenant.pk))
+        send.assert_called_once()
+        job = NotificationJob.objects.get(event='event_payment_proof')
+        self.assertEqual(job.recipient_phone, '+919059338727')                    # the event's booking WhatsApp number
+        self.assertEqual(job.context['name'], 'Test Player')
+        self.assertEqual(job.context['participants'], '3')
+        from notifications.services import template_params
+        self.assertEqual(template_params('event_payment_proof', job.context)[0], 'Test Player')
+
+    def test_screenshot_upload_needs_matching_phone_and_a_real_image(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        ref = self._book(1).data['reference']
+        self.assertEqual(self._upload(ref, phone='9876543299').status_code, 404)
+        fake = SimpleUploadedFile('pay.png', b'not an image', content_type='image/png')
+        r = self._upload(ref, file=fake)
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('screenshot', r.data)
+
+    def test_no_screenshot_for_events_without_a_qr(self):
+        from .models import Event
+        Event.objects.filter(slug=self.SLUG).update(payment_qr=None, payment_upi_id='')
+        ref = self._book(1).data['reference']
+        self.assertIsNone(self._book(1, phone='9876543211').data['payment'])
+        self.assertEqual(self._upload(ref).status_code, 400)
+
 
 def timezone_now():
     from django.utils import timezone

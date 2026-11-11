@@ -54,6 +54,45 @@ def send_notification_event(event_id, event_type, aggregate_id, payload, tenant_
                 deliver.delay(str(job.pk), str(tenant_id))
 
 
+def _event_payment_ctx(r):
+    from django.utils import timezone as tz
+    ev = r.schedule.event
+    rows = {t.language: t for t in ev.translations.all()}
+    title = rows.get('en') or next(iter(rows.values()), None)
+    start = tz.localtime(r.schedule.starts_at)
+    return {'name': r.contact_name or '-', 'phone': r.contact_phone or '-', 'event': (title.title if title and title.title else ev.slug),
+            'date': start.strftime('%d %b %Y') if r.schedule.time_tbd else start.strftime('%d %b %Y, %I:%M %p'),
+            'participants': str(r.participant_count), 'amount': str(r.total_amount), 'reference': r.reference}
+
+
+@shared_task(name='notifications.tasks.handle_event_booking_event')
+def handle_event_booking_event(event_id, event_type, aggregate_id, payload, tenant_id):
+    """event_booking.payment_submitted -> tell the organiser's WhatsApp number who paid."""
+    if event_type != 'event_booking.payment_submitted':
+        return
+    with tenant_scope(tenant_id):
+        from trips.models import EventRegistration
+        r = (EventRegistration.objects.select_related('schedule__event').prefetch_related('schedule__event__translations')
+             .filter(pk=aggregate_id).first())
+        if not r:
+            return
+        ev = r.schedule.event
+        number = (ev.payment_alert_number or ev.booking_whatsapp_number or '').strip()
+        if number:
+            from accounts.models import normalize_phone
+            try:
+                number = normalize_phone(number)     # staff may type '+91 90593 38727'
+            except Exception:  # noqa: BLE001
+                logger.warning('Event %s payment alert number %r is not a valid phone number.', ev.slug, number)
+                return
+        if not number:
+            logger.warning('Event %s has no payment alert or booking WhatsApp number; screenshot alert not sent.', ev.slug)
+            return
+        job = services.enqueue_to_number(number, NotificationEvent.EVENT_PAYMENT_PROOF, _event_payment_ctx(r), f'event-pay:{event_id}')
+        if job:
+            deliver.delay(str(job.pk), str(tenant_id))
+
+
 @shared_task(bind=True, max_retries=5, retry_backoff=True, name='notifications.tasks.deliver')
 def deliver(self, job_id, tenant_id):
     with tenant_scope(tenant_id):
@@ -85,7 +124,10 @@ def deliver(self, job_id, tenant_id):
         if not WhatsAppService.configured():
             return skip('WhatsApp is not configured (WHATSAPP_API_URL / WHATSAPP_ACCESS_TOKEN).')
         try:
-            result = WhatsAppService.send_template(job.user.phone_number, tpl.provider_template_name, job.language,
+            to = job.recipient_phone or (job.user.phone_number if job.user else '')
+            if not to:
+                return skip('No phone number to send to.')
+            result = WhatsAppService.send_template(to, tpl.provider_template_name, job.language,
                                                    services.template_params(job.event, job.context))
         except Exception as exc:   # noqa: BLE001 - network or Meta rejected it: record, retry, give up after the last try
             NotificationFailure.objects.create(job=job, error=str(exc)[:500], attempt=self.request.retries + 1)

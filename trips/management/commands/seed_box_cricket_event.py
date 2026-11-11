@@ -27,6 +27,10 @@ from trips.models import (Event, EventExclusion, EventFAQ, EventFormatDetail, Ev
 
 SLUG = 'box-cricket-community-play-day'
 POSTER = Path(__file__).resolve().parents[2] / 'seed_assets' / 'box-cricket-poster.jpg'
+UPI_QR = Path(__file__).resolve().parents[2] / 'seed_assets' / 'box-cricket-upi-qr.jpg'
+UPI_QR_ALT = 'Box Cricket UPI payment QR'
+UPI_ID = 'paytmqr5kw2z2@ptys'
+UPI_PAYEE = 'DEVIREDDY REVANTH'
 IST = ZoneInfo('Asia/Kolkata')
 STARTS_AT = dt.datetime(2026, 11, 14, 19, 0, tzinfo=IST)   # 7:00 PM
 ENDS_AT = dt.datetime(2026, 11, 14, 22, 0, tzinfo=IST)     # 10:00 PM
@@ -143,7 +147,20 @@ class Command(BaseCommand):
                         'or re-run with --skip-poster and upload the poster later in Admin → Media.') from exc
                 poster.save()
 
+            # UPI QR for paying the entry fee: customers see it after booking and upload a payment screenshot.
+            upi_qr = MediaAsset.objects.filter(alt_text=UPI_QR_ALT).first()
+            if upi_qr is None and not o['skip_poster'] and UPI_QR.exists():
+                upi_qr = MediaAsset(kind='image', alt_text=UPI_QR_ALT, width=831, height=1280)
+                try:
+                    with UPI_QR.open('rb') as fh:
+                        upi_qr.file.save('box-cricket-upi-qr.jpg', File(fh), save=False)
+                except Exception as exc:   # noqa: BLE001
+                    raise CommandError(f'Could not upload the UPI QR to file storage ({type(exc).__name__}: {exc}).') from exc
+                upi_qr.save()
+
             media = {'cover': poster, 'popup_banner': poster} if poster else {}
+            if upi_qr:
+                media.update(payment_qr=upi_qr, payment_upi_id=UPI_ID, payment_payee_name=UPI_PAYEE)
             event, created = Event.objects.update_or_create(slug=SLUG, defaults={
                 **media,
                 'category': category,
@@ -200,6 +217,11 @@ class Command(BaseCommand):
                     EventItineraryItem(itinerary=day, time_label=label, text_en=title, detail_en=detail,
                                        sort_order=i, tenant=tenant)
                     for i, (label, title, detail) in enumerate(TIMELINE)])
+
+            # WhatsApp alert to the organiser when a customer uploads a payment screenshot. Staff still type the
+            # Meta-approved template name in Admin → Notifications → Templates (see WHATSAPP_TEMPLATES.md).
+            from notifications.models import Channel, NotificationEvent, NotificationTemplate
+            NotificationTemplate.objects.get_or_create(event=NotificationEvent.EVENT_PAYMENT_PROOF, channel=Channel.WHATSAPP)
 
             event.refresh_from_db()
             event.publish()  # also moves the approved translations to PUBLISHED

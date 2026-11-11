@@ -60,3 +60,64 @@ def create_event_booking(*, event_slug, schedule_id, name, phone, participant_co
             ])),
         )
     return booking
+
+
+PAYMENT_SCREENSHOT_MAX_BYTES = 5 * 1024 * 1024
+
+
+class PaymentStorageError(Exception):
+    """The screenshot was fine but file storage (S3) refused it."""
+_PAYMENT_FORMATS = {'JPEG': 'jpg', 'PNG': 'png', 'WEBP': 'webp'}
+
+
+def submit_payment_proof(*, reference, phone, screenshot, utr=''):
+    """Attach the customer's UPI payment screenshot to their pending booking and alert the organiser on WhatsApp.
+
+    The phone number used to book must match. Uploading again replaces the earlier screenshot (and alerts again).
+    Raises ValidationError with a field dict.
+    """
+    from PIL import Image, UnidentifiedImageError
+
+    from core.services import emit
+
+    if screenshot is None:
+        raise ValidationError({'screenshot': 'Choose the screenshot of your payment.'})
+    if screenshot.size > PAYMENT_SCREENSHOT_MAX_BYTES:
+        raise ValidationError({'screenshot': 'The screenshot must be smaller than 5 MB.'})
+    try:   # check it really is an image, whatever its name says
+        with Image.open(screenshot) as img:
+            img.verify()
+            fmt = img.format
+    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
+        raise ValidationError({'screenshot': 'Upload a JPG, PNG or WebP image of your payment.'})
+    if fmt not in _PAYMENT_FORMATS:
+        raise ValidationError({'screenshot': 'Upload a JPG, PNG or WebP image of your payment.'})
+    screenshot.seek(0)
+    screenshot.name = f'payment.{_PAYMENT_FORMATS[fmt]}'
+
+    with transaction.atomic():
+        booking = (EventRegistration.objects.select_for_update().select_related('schedule__event')
+                   .filter(reference=(reference or '').strip().upper(), contact_phone=phone).first())
+        if booking is None:
+            raise ValidationError({'detail': 'No booking matches that reference and phone number.'})
+        if not (booking.schedule.event.payment_qr_id or booking.schedule.event.payment_upi_id):
+            raise ValidationError({'detail': 'This event does not take payment by QR code.'})
+        if booking.effective_status not in (EventRegistration.Status.PENDING, EventRegistration.Status.CONFIRMED):
+            raise ValidationError({'detail': 'This booking is no longer active, so a payment can\'t be added. Please book again.'})
+        old = booking.payment_screenshot.name if booking.payment_screenshot else ''
+        try:
+            booking.payment_screenshot.save(screenshot.name, screenshot, save=False)
+        except Exception as exc:   # noqa: BLE001 - S3/network/credentials: storage backends raise many types
+            import logging
+            logging.getLogger(__name__).exception('Could not store payment screenshot for %s', booking.reference)
+            raise PaymentStorageError() from exc
+        booking.payment_utr = (utr or '').strip()[:40]
+        booking.payment_submitted_at = timezone.now()
+        booking.save(update_fields=['payment_screenshot', 'payment_utr', 'payment_submitted_at', 'updated_at'])
+        emit('event_booking.payment_submitted', booking.pk, {'reference': booking.reference})
+    if old:
+        try:
+            booking.payment_screenshot.storage.delete(old)
+        except Exception:  # noqa: BLE001 - a leftover file is harmless
+            pass
+    return booking

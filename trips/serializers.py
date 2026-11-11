@@ -154,6 +154,39 @@ class EventBookingCreateSerializer(serializers.Serializer):
         return value
 
 
+class EventPaymentProofSerializer(serializers.Serializer):
+    phone = serializers.CharField(max_length=20)
+    screenshot = serializers.FileField()
+    utr = serializers.CharField(max_length=40, required=False, allow_blank=True, default='')
+
+    def validate_phone(self, value):
+        from django.core.exceptions import ValidationError as DjangoValidationError
+        from accounts.models import normalize_phone
+        try:
+            return normalize_phone(value)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(exc.messages)
+
+
+def _media_url(asset, request=None):
+    if not asset or not asset.file:
+        return None
+    try:
+        url = asset.file.url
+    except (ValueError, OSError):
+        return None
+    return request.build_absolute_uri(url) if request and url.startswith('/') else url
+
+
+def event_payment_info(event, request=None):
+    """UPI QR details shown to customers, or None when the event doesn't take QR payments."""
+    url = _media_url(event.payment_qr, request) if event.payment_qr_id else None
+    if not url and not event.payment_upi_id:
+        return None
+    # qr_url may be null (UPI ID only, no image uploaded yet): the website then uses its bundled QR, if it has one.
+    return {'qr_url': url, 'upi_id': event.payment_upi_id, 'payee_name': event.payment_payee_name}
+
+
 class EventBookingSerializer(serializers.ModelSerializer):
     """What the visitor sees about their own booking. Pending holds are never reported as confirmed."""
     status = serializers.SerializerMethodField()
@@ -166,12 +199,18 @@ class EventBookingSerializer(serializers.ModelSerializer):
     venue = serializers.SerializerMethodField()
     booking_whatsapp_number = serializers.CharField(source='schedule.event.booking_whatsapp_number')
     seats_left = serializers.SerializerMethodField()
+    payment = serializers.SerializerMethodField()
+    payment_submitted = serializers.SerializerMethodField()
 
     class Meta:
         model = m.EventRegistration
         fields = ('reference', 'status', 'status_label', 'contact_name', 'participant_count', 'unit_price',
                   'total_amount', 'reserved_until', 'confirmed_at', 'created_at', 'event_slug', 'event_title',
-                  'starts_at', 'ends_at', 'time_tbd', 'venue', 'booking_whatsapp_number', 'seats_left')
+                  'starts_at', 'ends_at', 'time_tbd', 'venue', 'booking_whatsapp_number', 'seats_left',
+                  'payment', 'payment_submitted', 'payment_submitted_at')
+
+    def get_payment(self, o): return event_payment_info(o.schedule.event, self.context.get('request'))
+    def get_payment_submitted(self, o): return bool(o.payment_screenshot)
 
     def get_status(self, o): return o.effective_status
     def get_status_label(self, o): return m.EventRegistration.Status(o.effective_status).label
@@ -303,14 +342,16 @@ class EventDetailSerializer(EventListSerializer):
     seo_title = serializers.SerializerMethodField()
     seo_description = serializers.SerializerMethodField()
     reservation_hold_hours = serializers.IntegerField(read_only=True)
+    payment = serializers.SerializerMethodField()
 
     class Meta(EventListSerializer.Meta):
         fields = EventListSerializer.Meta.fields + ('body', 'venue_name', 'venue_address', 'schedules', 'itineraries',
                                                     'things_to_bring', 'inclusions', 'exclusions', 'format_details',
                                                     'rules', 'reservation_hold_hours', 'highlights', 'faqs',
                                                     'headline', 'image_caption', 'format_note', 'schedule_note',
-                                                    'seo_title', 'seo_description')
+                                                    'seo_title', 'seo_description', 'payment')
 
+    def get_payment(self, o): return event_payment_info(o, self.context.get('request'))
     def get_body(self, o): return pick(o, self._lang(), 'body')
     def get_schedules(self, o): return EventScheduleSerializer(self._upcoming(o), many=True).data
 

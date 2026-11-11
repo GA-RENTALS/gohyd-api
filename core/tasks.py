@@ -18,6 +18,7 @@ ROUTES = {
     'invoice.': 'payments.tasks.generate_invoice_for_event',
     'booking.': 'notifications.tasks.handle_booking_event',
     'notification.': 'notifications.tasks.send_notification_event',
+    'event_booking.': 'notifications.tasks.handle_event_booking_event',
     'analytics.': 'tracking.tasks.handle_analytics_event',
 }
 

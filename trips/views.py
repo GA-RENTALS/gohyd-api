@@ -2,6 +2,7 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from drf_spectacular.utils import extend_schema
 from rest_framework import status, viewsets
 from django.db.models import Q
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -45,7 +46,7 @@ class EventViewSet(LangMixin, viewsets.ReadOnlyModelViewSet):
     filterset_fields = ['category__slug', 'show_in_popup', 'is_featured']
     search_fields = ['slug', 'translations__title']
     queryset = (m.Event.objects.filter(status=ContentStatus.PUBLISHED)
-                .select_related('cover', 'popup_banner', 'category')
+                .select_related('cover', 'popup_banner', 'category', 'payment_qr')
                 .prefetch_related('translations', 'schedules', 'itineraries__items', 'things_to_bring',
                                   'inclusions', 'exclusions', 'format_details', 'rules', 'highlights',
                                   'faqs').distinct())
@@ -74,7 +75,7 @@ class EventBookingCreateView(APIView):
         except DjangoValidationError as exc:
             detail = exc.message_dict if hasattr(exc, 'error_dict') else {'detail': exc.messages}
             return Response(detail, status=status.HTTP_400_BAD_REQUEST)
-        return Response(s.EventBookingSerializer(booking, context={'lang': request.query_params.get('lang', 'en')}).data,
+        return Response(s.EventBookingSerializer(booking, context={'request': request, 'lang': request.query_params.get('lang', 'en')}).data,
                         status=status.HTTP_201_CREATED)
 
 
@@ -97,7 +98,36 @@ class EventBookingStatusView(APIView):
                    .filter(reference=reference.strip().upper(), contact_phone=phone).first())
         if booking is None:
             return not_found
-        return Response(s.EventBookingSerializer(booking, context={'lang': request.query_params.get('lang', 'en')}).data)
+        return Response(s.EventBookingSerializer(booking, context={'request': request, 'lang': request.query_params.get('lang', 'en')}).data)
+
+
+class EventPaymentProofView(APIView):
+    """The customer uploads their UPI payment screenshot. Reference + booking phone must match."""
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    throttle_classes = [TrustedScopedRateThrottle]
+    throttle_scope = 'enquiry'
+    parser_classes = [MultiPartParser, FormParser]
+
+    @extend_schema(tags=['Events'], request={'multipart/form-data': s.EventPaymentProofSerializer}, responses=s.EventBookingSerializer)
+    def post(self, request, reference):
+        from .event_booking import PaymentStorageError, submit_payment_proof
+        data = s.EventPaymentProofSerializer(data=request.data)
+        data.is_valid(raise_exception=True)
+        v = data.validated_data
+        try:
+            booking = submit_payment_proof(reference=reference, phone=v['phone'], screenshot=v['screenshot'], utr=v.get('utr', ''))
+        except PaymentStorageError:
+            return Response({'detail': "We couldn't save your screenshot right now. Please try again in a few minutes, "
+                                       'or send it to us on WhatsApp with your booking reference.'},
+                            status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        except DjangoValidationError as exc:
+            detail = exc.message_dict if hasattr(exc, 'error_dict') else {'detail': exc.messages}
+            code = status.HTTP_404_NOT_FOUND if 'No booking matches' in str(detail) else status.HTTP_400_BAD_REQUEST
+            if isinstance(detail.get('detail'), list):
+                detail['detail'] = detail['detail'][0]
+            return Response(detail, status=code)
+        return Response(s.EventBookingSerializer(booking, context={'request': request, 'lang': request.query_params.get('lang', 'en')}).data)
 
 
 class MyEventBookingsView(APIView):
@@ -111,4 +141,4 @@ class MyEventBookingsView(APIView):
         bookings = (m.EventRegistration.objects.select_related('schedule__event')
                     .filter(Q(registrant=user) | Q(contact_phone=user.phone_number))
                     .order_by('-created_at'))
-        return Response(s.EventBookingSerializer(bookings, many=True, context={'lang': request.query_params.get('lang', 'en')}).data)
+        return Response(s.EventBookingSerializer(bookings, many=True, context={'request': request, 'lang': request.query_params.get('lang', 'en')}).data)

@@ -19,6 +19,7 @@ class NotificationEvent(models.TextChoices):
     REFUND = 'refund'
     MEMBERSHIP = 'membership'
     ENQUIRY_RESPONSE = 'enquiry_response'
+    EVENT_PAYMENT_PROOF = 'event_payment_proof'
 
 
 class Channel(models.TextChoices):
@@ -76,6 +77,8 @@ class NotificationJob(UUIDModel, Timestamped):
         SKIPPED = 'SKIPPED'
 
     user = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, on_delete=models.SET_NULL, related_name='notifications')
+    recipient_phone = models.CharField(max_length=20, blank=True,
+                                       help_text='Send to this number instead of the user (staff alerts).')
     event = models.CharField(max_length=30, choices=NotificationEvent.choices)
     channel = models.CharField(max_length=10, choices=Channel.choices)
     language = models.CharField(max_length=2, choices=Language.choices, default='en')

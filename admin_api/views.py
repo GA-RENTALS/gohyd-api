@@ -505,8 +505,11 @@ class AdminDashboardView(APIView):
         if request.user.has_perm('trips.view_eventregistration'):
             recent_events = list(EventRegistration.objects.order_by('-created_at').values(
                 'id', 'reference', 'status', 'total_amount', 'participant_count', 'created_at', 'contact_name',
-                'schedule__event__slug')[:6])
+                'schedule__event__slug', 'payment_screenshot')[:6])
+            storage = EventRegistration._meta.get_field('payment_screenshot').storage
             for row in recent_events:
+                shot = row.pop('payment_screenshot')
+                row['payment_screenshot_url'] = request.build_absolute_uri(storage.url(shot)) if shot else None
                 row['id'] = str(row['id'])
                 row['total_amount'] = str(row['total_amount'])
                 row['created_at'] = row['created_at'].isoformat()

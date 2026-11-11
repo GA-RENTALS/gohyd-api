@@ -122,11 +122,24 @@ class EventRuleInline(TabularInline):
 @admin.register(m.EventRegistration)
 class EventRegistrationAdmin(ModelAdmin):
     list_display = ('reference', 'contact_name', 'contact_phone', 'schedule', 'participant_count', 'total_amount',
-                    'status', 'reserved_until', 'created_at')
-    list_filter = ('status', 'source', 'schedule__event')
-    search_fields = ('reference', 'contact_name', 'contact_phone')
-    readonly_fields = ('reference', 'total_amount', 'confirmed_at', 'cancelled_at', 'created_at')
+                    'status', 'paid_screenshot', 'reserved_until', 'created_at')
+    list_filter = ('status', 'source', 'schedule__event', ('payment_submitted_at', admin.EmptyFieldListFilter))
+    search_fields = ('reference', 'contact_name', 'contact_phone', 'payment_utr')
+    readonly_fields = ('reference', 'total_amount', 'confirmed_at', 'cancelled_at', 'created_at',
+                       'payment_submitted_at', 'payment_screenshot_preview')
     actions = ('confirm_bookings', 'cancel_bookings')
+
+    @admin.display(description='Payment screenshot', boolean=True)
+    def paid_screenshot(self, obj):
+        return bool(obj.payment_screenshot)
+
+    @admin.display(description='Screenshot')
+    def payment_screenshot_preview(self, obj):
+        from django.utils.html import format_html
+        if not obj.payment_screenshot:
+            return 'Not uploaded yet'
+        url = obj.payment_screenshot.url
+        return format_html('<a href="{}" target="_blank" rel="noopener"><img src="{}" style="max-width:320px;max-height:480px;border:1px solid #ccc"></a>', url, url)
 
     @admin.action(description='Confirm selected bookings')
     def confirm_bookings(self, request, queryset):

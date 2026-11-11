@@ -20,6 +20,7 @@ TEMPLATE_PARAMS = {
     'balance_reminder': ['name', 'reference', 'amount', 'due_date'],
     'trip_reminder': ['name', 'trip', 'date'],
     'payment_receipt': ['name', 'amount'],
+    'event_payment_proof': ['name', 'phone', 'event', 'date', 'participants', 'amount', 'reference'],
 }
 
 
@@ -35,6 +36,16 @@ def render(template: NotificationTemplate, language: str, context: dict):
     class Safe(dict):
         def __missing__(self, k): return '{' + k + '}'
     return tr.subject.format_map(Safe(context)), tr.body.format_map(Safe(context))
+
+
+def enqueue_to_number(phone, event, context, dedupe_key, language='en'):
+    """One WhatsApp job for a number that isn't a customer account (e.g. the event organiser). Duplicates are ignored."""
+    try:
+        with transaction.atomic():
+            return NotificationJob.objects.create(recipient_phone=phone, event=event, channel=Channel.WHATSAPP,
+                                                  language=language, context=context, dedupe_key=dedupe_key[:120])
+    except IntegrityError:
+        return None
 
 
 def enqueue(user, event, context, dedupe_key, channels=None):
