@@ -86,6 +86,7 @@ class Booking(UUIDModel, Timestamped):
     # --- snapshots: never recalculated from live settings (3.3, 3.5) ---
     currency = models.CharField(max_length=3, default='INR')
     unit_price = models.DecimalField(**MONEY)
+    discount_amount = models.DecimalField(default=0, **MONEY, help_text='Coupon discount taken off this booking before tax.')
     subtotal = models.DecimalField(**MONEY, help_text='Net of tax.')
     tax_amount = models.DecimalField(**MONEY)
     total_amount = models.DecimalField(**MONEY)

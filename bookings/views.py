@@ -58,7 +58,8 @@ class CartView(APIView):
     @extend_schema(tags=['Cart'], responses=s.CartItemSerializer(many=True))
     def get(self, request):
         cart, _ = m.Cart.objects.get_or_create(user=request.user)
-        return Response(s.CartItemSerializer(cart.items.all(), many=True).data)
+        items = cart.items.select_related('schedule__trip', 'pickup_point').prefetch_related('schedule__trip__translations')
+        return Response(s.CartItemSerializer(items, many=True, context={'lang': request.query_params.get('lang', 'en')}).data)
 
     @extend_schema(tags=['Cart'], request=s.CartItemSerializer)
     def post(self, request):
@@ -74,13 +75,42 @@ class CartView(APIView):
         return Response(status=204)
 
 
+class CouponPreviewView(APIView):
+    """Shows what a coupon would take off these trips. Nothing is reserved; checkout checks the coupon again."""
+    permission_classes = [permissions.IsAuthenticated]
+
+    @extend_schema(tags=['Checkout'], request=s.CouponPreviewSerializer)
+    def post(self, request):
+        from decimal import Decimal
+        from core.money import q
+        from trips.models import TripSchedule
+        from .coupons import CouponError, allocate_discount, check_coupon, find_coupon
+        from .services import price
+        ser = s.CouponPreviewSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        items = ser.validated_data['items']
+        schedules = {str(x.pk): x for x in TripSchedule.objects.select_related('trip').filter(pk__in=[i['schedule'] for i in items])}
+        if len(schedules) != len({str(i['schedule']) for i in items}):
+            return Response({'status': 'error', 'message': 'Some trips could not be found.'}, status=400)
+        try:
+            coupon = find_coupon(ser.validated_data['code'])
+            check_coupon(coupon, request.user)
+            discounts = allocate_discount(coupon, [(str(i['schedule']), schedules[str(i['schedule'])].trip_id,
+                                                    q(schedules[str(i['schedule'])].price_per_participant) * i['participant_count']) for i in items])
+        except CouponError as e:
+            return Response({'status': 'error', 'message': e.message}, status=400)
+        before = sum((price(schedules[str(i['schedule'])], i['participant_count']).total for i in items), Decimal('0.00'))
+        after = sum((price(schedules[str(i['schedule'])], i['participant_count'], discount=discounts[str(i['schedule'])]).total for i in items), Decimal('0.00'))
+        return Response({'code': coupon.code, 'discount': sum(discounts.values(), Decimal('0.00')), 'total_before': before, 'total_after': after})
+
+
 class CheckoutViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [permissions.IsAuthenticated]
     serializer_class = s.CheckoutSerializer
     pagination_class = None
 
     def get_queryset(self):
-        return m.CheckoutOrder.objects.filter(user=self.request.user).prefetch_related('bookings__schedule__trip__translations', 'bookings__schedule__trip__cover', 'bookings__pickup_point', 'bookings__participants')
+        return m.CheckoutOrder.objects.filter(user=self.request.user).prefetch_related('bookings__schedule__trip__translations', 'bookings__schedule__trip__cover', 'bookings__pickup_point', 'bookings__participants', 'bookings__invoices')
 
     @extend_schema(tags=['Checkout'], request=s.CreateCheckoutSerializer, responses=s.CheckoutSerializer)
     def create(self, request):
@@ -90,7 +120,7 @@ class CheckoutViewSet(viewsets.ReadOnlyModelViewSet):
         key = request.headers.get('Idempotency-Key') or str(uuid.uuid4())
         lines = [CheckoutLine(i['schedule'], i['participant_count'], i.get('pickup_point')) for i in ser.validated_data['items']]
         try:
-            order = create_checkout(request.user, lines, key, request)
+            order = create_checkout(request.user, lines, key, request, coupon_code=ser.validated_data.get('coupon') or None)
         except BookingError as e:
             return fail(e, 409 if e.code == 'checkout_unavailable' else 400)
         m.CartItem.objects.filter(cart__user=request.user, schedule_id__in=[l.schedule_id for l in lines]).delete()
@@ -131,7 +161,16 @@ class BookingViewSet(viewsets.ReadOnlyModelViewSet):
 
     def get_queryset(self):
         return (m.Booking.objects.filter(primary_booker=self.request.user)
-                .select_related('schedule__trip__cover', 'pickup_point').prefetch_related('participants', 'schedule__trip__translations'))
+                .select_related('schedule__trip__cover', 'pickup_point').prefetch_related('participants', 'schedule__trip__translations', 'invoices'))
+
+    @extend_schema(tags=['Bookings'], responses=s.InvoiceSerializer)
+    @action(detail=True, methods=['get'])
+    def invoice(self, request, pk=None):
+        """The GST invoice for this booking. Invoices are issued once the booking is paid."""
+        inv = self.get_object().invoices.prefetch_related('items').select_related('booking').first()
+        if inv is None:
+            return Response({'status': 'error', 'message': 'The invoice is issued once your payment is received.'}, status=404)
+        return Response(s.InvoiceSerializer(inv).data)
 
     @extend_schema(tags=['Bookings'], request=s.ParticipantSerializer(many=True))
     @action(detail=True, methods=['put'])

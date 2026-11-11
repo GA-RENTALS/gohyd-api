@@ -164,3 +164,91 @@ class OverbookingTests(TransactionTestCase):
         self.assertEqual(sorted(results), ['full', 'ok'])
         with tenant_scope(tenant.pk):
             self.assertEqual(TripSchedule.objects.get(pk=s.pk).seats_booked, 2)
+
+
+class CouponCheckoutTests(TenantTestCase):
+    """Coupons at checkout: validated on the server, taken off before GST, limited by uses and trips."""
+
+    def setUp(self):
+        self.user = make_user()
+
+    def _coupon(self, **kw):
+        from crm.models import Coupon
+        return Coupon.objects.create(**{'code': 'MONSOON10', 'percent_basis_points': 1000, **kw})
+
+    def test_percent_coupon_reduces_total_advance_and_tax_base(self):
+        gst = make_gst(500)
+        _, s1 = make_trip('a', advance_bp=3000, gst=gst)                     # 2 × 5000 = 10000 list
+        self._coupon()
+        order = create_checkout(self.user, [CheckoutLine(s1.pk, 2)], 'c1', coupon_code='monsoon10')
+        b = order.bookings.get()
+        self.assertEqual(order.discount_total, Decimal('1000.00'))
+        self.assertEqual(b.discount_amount, Decimal('1000.00'))
+        self.assertEqual(b.subtotal, Decimal('9000.00'))                      # GST charged on the discounted amount
+        self.assertEqual(b.total_amount, Decimal('9450.00'))
+        self.assertEqual(b.advance_amount, Decimal('2835.00'))
+        self.assertEqual(order.coupon.code, 'MONSOON10')
+
+    def test_fixed_coupon_is_shared_across_trips_and_adds_up(self):
+        _, s1 = make_trip('a')
+        _, s2 = make_trip('b', price='2000.00')
+        self._coupon(code='FLAT700', percent_basis_points=None, fixed_amount=Decimal('700.00'))
+        order = create_checkout(self.user, [CheckoutLine(s1.pk, 1), CheckoutLine(s2.pk, 1)], 'c2', coupon_code='FLAT700')
+        self.assertEqual(sum(b.discount_amount for b in order.bookings.all()), Decimal('700.00'))
+        self.assertEqual(order.total_amount, Decimal('6300.00'))
+
+    def test_used_up_or_wrong_trip_coupon_creates_nothing(self):
+        t1, s1 = make_trip('a')
+        t2, _ = make_trip('b')
+        c = self._coupon(max_redemptions=1, per_user_limit=5)
+        create_checkout(self.user, [CheckoutLine(s1.pk, 1)], 'c3', coupon_code='MONSOON10')
+        with self.assertRaises(BookingError) as e:
+            create_checkout(self.user, [CheckoutLine(s1.pk, 1)], 'c4', coupon_code='MONSOON10')
+        self.assertEqual(e.exception.code, 'invalid_coupon')
+        only_b = self._coupon(code='BONLY')
+        only_b.trips.add(t2)
+        before = Booking.objects.count()
+        with self.assertRaises(BookingError):
+            create_checkout(self.user, [CheckoutLine(s1.pk, 1)], 'c5', coupon_code='BONLY')
+        self.assertEqual(Booking.objects.count(), before)                      # all-or-nothing
+
+    def test_preview_and_checkout_api(self):
+        _, s1 = make_trip('a')
+        self._coupon()
+        client = APIClient()
+        client.force_authenticate(self.user)
+        items = [{'schedule': str(s1.pk), 'participant_count': 1}]
+        r = client.post('/api/v1/coupons/preview/', {'code': 'MONSOON10', 'items': items}, format='json')
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual((Decimal(str(r.data['discount'])), Decimal(str(r.data['total_after']))), (Decimal('500.00'), Decimal('4500.00')))
+        self.assertEqual(client.post('/api/v1/coupons/preview/', {'code': 'NOPE', 'items': items}, format='json').status_code, 400)
+        r = client.post('/api/v1/checkouts/', {'items': items, 'coupon': 'MONSOON10'}, format='json')
+        self.assertEqual(r.status_code, 201, r.data)
+        self.assertEqual((r.data['coupon_code'], r.data['total_amount']), ('MONSOON10', '4500.00'))
+
+
+class CartAndInvoiceApiTests(TenantTestCase):
+    def setUp(self):
+        self.user = make_user()
+        self.client_ = APIClient()
+        self.client_.force_authenticate(self.user)
+
+    def test_cart_lists_trip_details(self):
+        _, s1 = make_trip('a')
+        self.assertEqual(self.client_.post('/api/v1/cart/', {'schedule': str(s1.pk), 'participant_count': 2}, format='json').status_code, 201)
+        row = self.client_.get('/api/v1/cart/').data[0]
+        self.assertEqual((row['trip'], row['participant_count'], row['is_bookable'], row['seats_left']), ('a', 2, True, 10))
+
+    def test_invoice_only_for_own_issued_booking(self):
+        from core.testing import make_entity
+        from payments import invoicing
+        _, s1 = make_trip('a')
+        b = create_checkout(self.user, [CheckoutLine(s1.pk, 1)], 'i1').bookings.get()
+        self.assertEqual(self.client_.get(f'/api/v1/bookings/{b.pk}/invoice/').status_code, 404)     # not issued yet
+        make_entity()
+        inv = invoicing.issue_invoice(b)
+        r = self.client_.get(f'/api/v1/bookings/{b.pk}/invoice/')
+        self.assertEqual((r.status_code, r.data['number'], r.data['booking_reference']), (200, inv.number, b.reference))
+        other = APIClient()
+        other.force_authenticate(make_user('+919000000002'))
+        self.assertEqual(other.get(f'/api/v1/bookings/{b.pk}/invoice/').status_code, 404)

@@ -61,10 +61,11 @@ class Pricing:
     tax_snapshot: dict
 
 
-def price(schedule: TripSchedule, participants: int, now=None) -> Pricing:
+def price(schedule: TripSchedule, participants: int, now=None, discount=Decimal('0.00')) -> Pricing:
+    """`discount` (from a coupon) comes off the list amount before GST, so tax is charged on what is actually paid."""
     now = now or timezone.now()
     unit = q(schedule.price_per_participant)
-    gross_or_net = q(unit * participants)
+    gross_or_net = max(q(unit * participants) - q(discount), Decimal('0.00'))
     cfg = gst_for(schedule.trip)
     if cfg and cfg.enabled:
         t = extract_gst(gross_or_net, cfg.rate_basis_points) if cfg.price_includes_tax else add_gst(gross_or_net, cfg.rate_basis_points)
@@ -91,7 +92,7 @@ class CheckoutLine:
 
 
 @transaction.atomic
-def create_checkout(user, lines, idempotency_key, request=None):
+def create_checkout(user, lines, idempotency_key, request=None, coupon_code=None):
     """
     Validates capacity for EVERY line before committing anything. If any line can't be fulfilled, raises BookingError
     listing the failures and nothing is created. Replaying the same idempotency_key returns the original checkout.
@@ -126,11 +127,27 @@ def create_checkout(user, lines, idempotency_key, request=None):
     if failures:
         raise BookingError('Some trips in your checkout cannot be booked. Nothing has been charged or reserved.', 'checkout_unavailable', {'items': failures})
 
-    priced = {str(l.schedule_id): price(schedules[str(l.schedule_id)], l.participant_count, now) for l in lines}
+    coupon, discounts = None, {}
+    if coupon_code:
+        from .coupons import CouponError, allocate_discount, check_coupon, find_coupon
+        try:
+            coupon = find_coupon(coupon_code, lock=True)      # row lock: two checkouts can't both take the last use
+            check_coupon(coupon, user, now)
+            discounts = allocate_discount(coupon, [
+                (str(l.schedule_id), schedules[str(l.schedule_id)].trip_id,
+                 q(schedules[str(l.schedule_id)].price_per_participant) * l.participant_count) for l in lines])
+        except CouponError as e:
+            raise BookingError(e.message, 'invalid_coupon')
+    priced = {str(l.schedule_id): price(schedules[str(l.schedule_id)], l.participant_count, now,
+                                         discounts.get(str(l.schedule_id), Decimal('0.00'))) for l in lines}
+    discount_total = sum(discounts.values(), Decimal('0.00'))
     order = CheckoutOrder.objects.create(
-        user=user, idempotency_key=idempotency_key,
+        user=user, idempotency_key=idempotency_key, coupon=coupon, discount_total=discount_total,
         total_amount=sum((p.total for p in priced.values()), Decimal('0.00')),
         advance_total=sum((p.split.advance for p in priced.values()), Decimal('0.00')))
+    if coupon:
+        from crm.models import CouponRedemption
+        CouponRedemption.objects.create(coupon=coupon, user=user, checkout=order, discount=discount_total)
 
     for l in lines:
         s, p = schedules[str(l.schedule_id)], priced[str(l.schedule_id)]
@@ -138,7 +155,8 @@ def create_checkout(user, lines, idempotency_key, request=None):
                                            pickup_point_id=l.pickup_point_id, advance_basis_points=p.advance_bp)
         booking = Booking.objects.create(
             checkout=order, checkout_item=item, primary_booker=user, schedule=s, participant_count=l.participant_count,
-            unit_price=p.unit_price, subtotal=p.subtotal, tax_amount=p.tax, total_amount=p.total,
+            unit_price=p.unit_price, discount_amount=discounts.get(str(s.pk), Decimal('0.00')),
+            subtotal=p.subtotal, tax_amount=p.tax, total_amount=p.total,
             advance_basis_points=p.advance_bp, advance_amount=p.split.advance, balance_amount=p.split.balance,
             balance_due_at=p.balance_due_at, tax_snapshot=p.tax_snapshot, pickup_point_id=l.pickup_point_id,
             refund_policy_snapshot=[{'days_before': x.days_before, 'refund_basis_points': x.refund_basis_points}

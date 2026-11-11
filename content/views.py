@@ -44,6 +44,14 @@ class FAQViewSet(LangMixin, viewsets.ReadOnlyModelViewSet):
     queryset = m.FAQ.objects.filter(is_published=True)
     lookup_field = 'pk'
 
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        # The public FAQ page shows only site-wide entries by default. Scoped FAQs
+        # remain available when a destination or trip is explicitly requested.
+        if self.action == 'list' and not self.request.query_params.get('destination__slug') and not self.request.query_params.get('trip__slug'):
+            queryset = queryset.filter(destination__isnull=True, trip__isnull=True)
+        return queryset
+
 
 class TestimonialViewSet(LangMixin, viewsets.ReadOnlyModelViewSet):
     serializer_class = s.TestimonialSerializer

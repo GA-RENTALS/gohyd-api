@@ -22,10 +22,11 @@ class BookingSerializer(serializers.ModelSerializer):
     outstanding = serializers.SerializerMethodField()
     is_overdue = serializers.SerializerMethodField()
     participants = ParticipantSerializer(many=True, read_only=True)
+    invoice_number = serializers.SerializerMethodField()
 
     class Meta:
         model = m.Booking
-        fields = ('id', 'reference', 'status', 'checkout', 'trip', 'trip_title', 'trip_cover', 'pickup_point_name', 'created_at', 'starts_at', 'participant_count', 'currency', 'subtotal', 'tax_amount', 'total_amount',
+        fields = ('id', 'reference', 'status', 'checkout', 'trip', 'trip_title', 'trip_cover', 'pickup_point_name', 'created_at', 'starts_at', 'participant_count', 'currency', 'discount_amount', 'subtotal', 'tax_amount', 'total_amount', 'invoice_number',
                   'advance_basis_points', 'advance_amount', 'balance_amount', 'balance_due_at', 'paid', 'outstanding', 'is_overdue', 'participants')
 
     def get_trip_title(self, o):
@@ -45,6 +46,10 @@ class BookingSerializer(serializers.ModelSerializer):
     def get_pickup_point_name(self, o):
         return o.pickup_point.name if o.pickup_point_id else ''
 
+    def get_invoice_number(self, o):
+        inv = o.invoices.first()
+        return inv.number if inv else None
+
     def get_paid(self, o): return paid_amount(o)
     def get_outstanding(self, o): return outstanding(o)
 
@@ -61,6 +66,12 @@ class CheckoutLineSerializer(serializers.Serializer):
 
 class CreateCheckoutSerializer(serializers.Serializer):
     items = CheckoutLineSerializer(many=True, allow_empty=False)
+    coupon = serializers.CharField(required=False, allow_blank=True, max_length=30)
+
+
+class CouponPreviewSerializer(serializers.Serializer):
+    code = serializers.CharField(max_length=30)
+    items = CheckoutLineSerializer(many=True, allow_empty=False)
 
 
 class CheckoutSerializer(serializers.ModelSerializer):
@@ -68,7 +79,9 @@ class CheckoutSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = m.CheckoutOrder
-        fields = ('id', 'reference', 'status', 'currency', 'total_amount', 'advance_total', 'created_at', 'bookings')
+        fields = ('id', 'reference', 'status', 'currency', 'coupon_code', 'discount_total', 'total_amount', 'advance_total', 'created_at', 'bookings')
+
+    coupon_code = serializers.CharField(source='coupon.code', default=None, read_only=True)
 
 
 class PayRequestSerializer(serializers.Serializer):
@@ -83,6 +96,56 @@ class ConfirmPaymentSerializer(serializers.Serializer):
 
 
 class CartItemSerializer(serializers.ModelSerializer):
+    """Write: schedule, participant_count, pickup_point. Read: also what the cart page needs to show each line."""
+    trip = serializers.CharField(source='schedule.trip.slug', read_only=True)
+    trip_title = serializers.SerializerMethodField()
+    starts_at = serializers.DateTimeField(source='schedule.starts_at', read_only=True)
+    ends_at = serializers.DateTimeField(source='schedule.ends_at', read_only=True)
+    price_per_participant = serializers.DecimalField(source='schedule.price_per_participant', max_digits=12, decimal_places=2, read_only=True)
+    seats_left = serializers.IntegerField(source='schedule.seats_left', read_only=True)
+    is_bookable = serializers.SerializerMethodField()
+    pickup_point_name = serializers.SerializerMethodField()
+
     class Meta:
         model = m.CartItem
-        fields = ('id', 'schedule', 'participant_count', 'pickup_point')
+        fields = ('id', 'schedule', 'participant_count', 'pickup_point', 'trip', 'trip_title', 'starts_at', 'ends_at',
+                  'price_per_participant', 'seats_left', 'is_bookable', 'pickup_point_name')
+
+    def get_trip_title(self, o):
+        from content.serializers import pick
+        return pick(o.schedule.trip, self.context.get('lang', 'en'), 'title') or o.schedule.trip.slug
+
+    def get_is_bookable(self, o):
+        from django.utils import timezone
+        s = o.schedule
+        return (s.is_open and s.trip.status == 'PUBLISHED' and s.trip.operational_status == 'OPEN'
+                and s.starts_at > timezone.now() and s.seats_left >= o.participant_count)
+
+    def get_pickup_point_name(self, o):
+        return o.pickup_point.name if o.pickup_point_id else ''
+
+
+class InvoiceItemSerializer(serializers.Serializer):
+    description = serializers.CharField()
+    quantity = serializers.IntegerField()
+    unit_amount = serializers.DecimalField(max_digits=12, decimal_places=2)
+    tax_amount = serializers.DecimalField(max_digits=12, decimal_places=2)
+    total = serializers.DecimalField(max_digits=12, decimal_places=2)
+
+
+class InvoiceSerializer(serializers.Serializer):
+    """A customer's GST invoice, exactly as issued (snapshot values, never live settings)."""
+    number = serializers.CharField()
+    issued_at = serializers.DateTimeField()
+    currency = serializers.CharField()
+    seller = serializers.JSONField(source='entity_snapshot')
+    billing_name = serializers.CharField()
+    billing_gstin = serializers.CharField()
+    billing_address = serializers.CharField()
+    subtotal = serializers.DecimalField(max_digits=12, decimal_places=2)
+    tax_amount = serializers.DecimalField(max_digits=12, decimal_places=2)
+    total = serializers.DecimalField(max_digits=12, decimal_places=2)
+    tax = serializers.JSONField(source='tax_snapshot')
+    booking_reference = serializers.CharField(source='booking.reference')
+    discount_amount = serializers.DecimalField(source='booking.discount_amount', max_digits=12, decimal_places=2)
+    items = InvoiceItemSerializer(many=True)
