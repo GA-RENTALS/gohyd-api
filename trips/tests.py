@@ -36,6 +36,11 @@ class EventPopupAndBookingTests(TenantTestCase):
                       'staticfiles': {'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage'}})
         self._storage.enable()
         self.addCleanup(self._storage.disable)
+        # Throttle counters live in the cache: use a private, empty one per test instead of the shared Redis.
+        self._cache = override_settings(CACHES={'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+                                                            'LOCATION': f'event-tests-{id(self)}'}})
+        self._cache.enable()
+        self.addCleanup(self._cache.disable)
         from unittest import mock
         import datetime as dt
         from zoneinfo import ZoneInfo
@@ -130,6 +135,18 @@ class EventPopupAndBookingTests(TenantTestCase):
         self.assertEqual(ok.data['status_label'], 'Pending confirmation')
         self.assertEqual(APIClient().get(f'/api/v1/event-bookings/{ref}/?phone=9876543299').status_code, 404)
 
+
+    def test_signed_in_customer_sees_event_bookings_made_with_their_phone(self):
+        from core.testing import make_user
+        mine = self._book(2, phone='9876543210').data['reference']
+        self._book(1, phone='9876543299')                       # someone else's booking
+        self.assertEqual(APIClient().get('/api/v1/me/event-bookings/').status_code, 401)
+        client = APIClient()
+        client.force_authenticate(make_user('+919876543210'))
+        r = client.get('/api/v1/me/event-bookings/')
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual([b['reference'] for b in r.data], [mine])
+        self.assertEqual(r.data[0]['status'], 'PENDING')
 
     def test_staff_typed_phone_is_normalised_and_findable(self):
         from .models import EventRegistration, EventSchedule

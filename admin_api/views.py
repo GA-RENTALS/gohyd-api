@@ -31,7 +31,7 @@ from payments.models import BusinessEntity, GstConfiguration, Payment, PaymentKi
 from payments import services as payment_services
 from content.models import ContentStatus
 from operations.models import SafetyWaiver
-from trips.models import Trip, TripSchedule
+from trips.models import EventRegistration, Trip, TripSchedule
 
 from .permissions import StaffOnly, has_staff_membership
 from .registry import MODULE_LABELS, RESOURCES, Resource, get_resource, module_resource_keys
@@ -458,6 +458,9 @@ class AdminDashboardView(APIView):
             cards.append({'key': 'trips', 'label': 'Published trips', 'value': Trip.objects.filter(status=ContentStatus.PUBLISHED).count(), 'delta': delta(Trip, status=ContentStatus.PUBLISHED)})
         if request.user.has_perm('bookings.view_booking'):
             cards.append({'key': 'bookings', 'label': 'Bookings', 'value': Booking.objects.exclude(status=Booking.Status.CANCELLED).count(), 'delta': delta(Booking)})
+        if request.user.has_perm('trips.view_eventregistration'):
+            cards.append({'key': 'event-bookings', 'label': 'Event bookings to confirm',
+                          'value': EventRegistration.objects.filter(status=EventRegistration.Status.PENDING).count(), 'delta': None})
         if request.user.has_perm('payments.view_payment'):
             payments_total = Payment.objects.filter(status=Payment.Status.SUCCEEDED).aggregate(total=Sum('amount'))['total'] or Decimal('0.00')
             cards.append({'key': 'revenue', 'label': 'Collected', 'value': str(payments_total), 'delta': delta(Payment, agg='amount', status=Payment.Status.SUCCEEDED)})
@@ -498,6 +501,15 @@ class AdminDashboardView(APIView):
                 row['id'] = str(row['id'])
                 row['total_amount'] = str(row['total_amount'])
                 row['created_at'] = row['created_at'].isoformat()
+        recent_events = []
+        if request.user.has_perm('trips.view_eventregistration'):
+            recent_events = list(EventRegistration.objects.order_by('-created_at').values(
+                'id', 'reference', 'status', 'total_amount', 'participant_count', 'created_at', 'contact_name',
+                'schedule__event__slug')[:6])
+            for row in recent_events:
+                row['id'] = str(row['id'])
+                row['total_amount'] = str(row['total_amount'])
+                row['created_at'] = row['created_at'].isoformat()
         if request.user.has_perm('trips.view_tripschedule'):
             upcoming_trips = list(TripSchedule.objects.filter(
                 starts_at__gte=now,
@@ -515,6 +527,7 @@ class AdminDashboardView(APIView):
             'cards': cards,
             'charts': charts,
             'recent_bookings': recent,
+            'recent_event_bookings': recent_events,
             'upcoming_trips': upcoming_trips,
             'setup': self._setup(request.user),
             'as_of': timezone.now().isoformat(),

@@ -1,7 +1,8 @@
 from django.core.exceptions import ValidationError as DjangoValidationError
 from drf_spectacular.utils import extend_schema
 from rest_framework import status, viewsets
-from rest_framework.permissions import AllowAny
+from django.db.models import Q
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -97,3 +98,17 @@ class EventBookingStatusView(APIView):
         if booking is None:
             return not_found
         return Response(s.EventBookingSerializer(booking, context={'lang': request.query_params.get('lang', 'en')}).data)
+
+
+class MyEventBookingsView(APIView):
+    """The signed-in customer's event bookings. Public event booking needs no login, so bookings made with the
+    account's (OTP-verified) phone number count too, not only ones linked through `registrant`."""
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(tags=['Events'], responses=s.EventBookingSerializer(many=True))
+    def get(self, request):
+        user = request.user
+        bookings = (m.EventRegistration.objects.select_related('schedule__event')
+                    .filter(Q(registrant=user) | Q(contact_phone=user.phone_number))
+                    .order_by('-created_at'))
+        return Response(s.EventBookingSerializer(bookings, many=True, context={'lang': request.query_params.get('lang', 'en')}).data)

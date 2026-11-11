@@ -8,6 +8,7 @@ router.register('trips', views.TripViewSet, basename='trip')
 router.register('events', views.EventViewSet, basename='event')
 router.register('categories', views.TripCategoryViewSet, basename='category')
 urlpatterns = [
+    path('me/event-bookings/', views.MyEventBookingsView.as_view(), name='my-event-bookings'),
     path('event-bookings/', views.EventBookingCreateView.as_view(), name='event-booking-create'),
     path('event-bookings/<str:reference>/', views.EventBookingStatusView.as_view(), name='event-booking-status'),
 ] + router.urls
