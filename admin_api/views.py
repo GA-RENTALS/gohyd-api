@@ -8,6 +8,7 @@ from django.core.exceptions import ObjectDoesNotExist, ValidationError as Django
 from django.core.exceptions import RequestDataTooBig
 from django.core.serializers.json import DjangoJSONEncoder
 from django.db import IntegrityError, transaction
+from django.db.models import ProtectedError, RestrictedError
 from django.db.models import Count, Q, Sum
 from django.db.models.functions import TruncDate, TruncMonth
 from django.http import Http404
@@ -29,9 +30,9 @@ from django.conf import settings
 from core.models import Setting
 from payments.models import BusinessEntity, GstConfiguration, Payment, PaymentKind, Refund
 from payments import services as payment_services
-from content.models import ContentStatus
+from content.models import ContentStatus, Destination
 from operations.models import SafetyWaiver
-from trips.models import EventRegistration, Trip, TripSchedule
+from trips.models import Event, EventRegistration, Trip, TripSchedule
 
 from .permissions import StaffOnly, has_staff_membership
 from .registry import MODULE_LABELS, RESOURCES, Resource, get_resource, module_resource_keys
@@ -186,6 +187,23 @@ def _serializer_error(exc):
     return Response({'detail': str(exc)}, status=status.HTTP_409_CONFLICT)
 
 
+def _delete_blocker(resource, instance):
+    """Safe delete: refuse when real customer data depends on the record, with a sentence staff can act on."""
+    if resource.model is Trip:
+        n = Booking.objects.filter(schedule__trip=instance).count()
+        if n:
+            return f'This trip has {n} booking{"" if n == 1 else "s"}, so it can\'t be deleted. Set it to Paused or Cancelled instead.'
+    if resource.model is Event:
+        n = EventRegistration.objects.filter(schedule__event=instance).count()
+        if n:
+            return f'This event has {n} booking{"" if n == 1 else "s"}, so it can\'t be deleted. Unpublish it or cancel its bookings instead.'
+    if resource.model is Destination:
+        n = instance.trips.count()
+        if n:
+            return f'This destination is used by {n} trip{"" if n == 1 else "s"}. Remove it from those trips first.'
+    return ''
+
+
 class AdminSessionView(APIView):
     permission_classes = [StaffOnly]
 
@@ -317,11 +335,19 @@ class AdminResourceDetailView(UploadAwareView):
 
     def delete(self, request, resource_key, pk):
         resource, instance = self._get(request, resource_key, pk, 'delete')
+        blocker = _delete_blocker(resource, instance)
+        if blocker:
+            return Response({'detail': blocker}, status=status.HTTP_409_CONFLICT)
         before = _serialize(resource, instance, request)
         try:
             with transaction.atomic():
                 instance.delete()
                 _audit(request, f'{resource.key}.delete', resource, instance, before=before)
+        except (ProtectedError, RestrictedError) as exc:
+            names = sorted({obj._meta.verbose_name_plural for obj in (getattr(exc, 'protected_objects', None) or getattr(exc, 'restricted_objects', None) or [])})
+            linked = ', '.join(str(n) for n in names) or 'other records'
+            return Response({'detail': f"This {resource.label.lower().rstrip('s')} can't be deleted because it is still linked to {linked}. "
+                                       'Remove those first, or unpublish / cancel it instead.'}, status=status.HTTP_409_CONFLICT)
         except IntegrityError as exc:
             return _serializer_error(exc)
         return Response(status=status.HTTP_204_NO_CONTENT)
@@ -344,6 +370,10 @@ class StaffActionView(APIView):
                 return self._content_transition(request)
             if action == 'participant-check-in':
                 return self._participant_check_in(request)
+            if action == 'cancel-booking':
+                return self._cancel_booking(request)
+            if action == 'event-check-in':
+                return self._event_check_in(request)
         except (BookingError, DjangoValidationError) as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except IntegrityError as exc:
@@ -429,10 +459,43 @@ class StaffActionView(APIView):
         _require_model_permission(request, resource, 'change')
         participant = BookingParticipant.objects.get(pk=request.data.get('participant_id'))
         before = _serialize(resource, participant, request)
+        if participant.checked_in_at:
+            raise serializers.ValidationError({'detail': 'This participant is already checked in.'})
         participant.checked_in_at = timezone.now()
         participant.save(update_fields=['checked_in_at', 'updated_at'])
         _audit(request, 'participants.check_in', resource, participant, before=before, after=_serialize(resource, participant, request))
         return Response(_serialize(resource, participant, request))
+
+    def _cancel_booking(self, request):
+        """Cancel one trip booking: reuses bookings.services.cancel_booking (releases seats, requests the policy refund)."""
+        from bookings.services import cancel_booking
+        resource = _resolve('bookings')
+        if not request.user.has_perm('bookings.change_booking'):
+            raise PermissionDenied('You do not have permission to cancel bookings.')
+        booking = Booking.objects.get(pk=request.data.get('booking_id'))
+        before = _serialize(resource, booking, request)
+        booking = cancel_booking(booking, request.user, str(request.data.get('reason', ''))[:255], request=request)
+        _audit(request, 'bookings.cancel', resource, booking, before=before, after=_serialize(resource, booking, request))
+        return Response(_serialize(resource, booking, request))
+
+    def _event_check_in(self, request):
+        """Mark an event attendee as arrived. Pass participant_id, or registration_id to check in the booking's contact person."""
+        from trips.models import EventAttendance, EventParticipant
+        resource = _resolve('event-attendance')
+        _require_model_permission(request, resource, 'change')
+        if request.data.get('participant_id'):
+            participant = EventParticipant.objects.select_related('registration').get(pk=request.data['participant_id'])
+        else:
+            registration = EventRegistration.objects.get(pk=request.data.get('registration_id'))
+            participant = registration.participants.order_by('full_name').first() or EventParticipant.objects.create(
+                registration=registration, full_name=registration.contact_name or registration.reference, phone=registration.contact_phone)
+        if participant.registration.status != EventRegistration.Status.CONFIRMED:
+            raise serializers.ValidationError({'detail': 'Only confirmed bookings can be checked in. Confirm the booking first.'})
+        if participant.attendance.exists():
+            raise serializers.ValidationError({'detail': f'{participant.full_name} is already checked in.'})
+        attendance = EventAttendance.objects.create(participant=participant, checked_in_by=request.user, method='ADMIN')
+        _audit(request, 'event_attendance.check_in', resource, attendance, after={'participant': str(participant.pk)})
+        return Response({'participant_id': str(participant.pk), 'checked_in_at': attendance.checked_in_at})
 
 
 class AdminDashboardView(APIView):
@@ -496,21 +559,23 @@ class AdminDashboardView(APIView):
         upcoming_trips = []
         if request.user.has_perm('bookings.view_booking'):
             recent = list(Booking.objects.select_related('primary_booker', 'schedule__trip').order_by('-created_at').values(
-                'id', 'reference', 'status', 'total_amount', 'created_at', 'primary_booker__full_name', 'schedule__trip__slug')[:6])
+                'id', 'reference', 'status', 'total_amount', 'created_at', 'primary_booker__full_name', 'schedule__trip__slug', 'schedule__trip_id')[:6])
             for row in recent:
                 row['id'] = str(row['id'])
+                row['schedule__trip_id'] = str(row['schedule__trip_id'])
                 row['total_amount'] = str(row['total_amount'])
                 row['created_at'] = row['created_at'].isoformat()
         recent_events = []
         if request.user.has_perm('trips.view_eventregistration'):
             recent_events = list(EventRegistration.objects.order_by('-created_at').values(
                 'id', 'reference', 'status', 'total_amount', 'participant_count', 'created_at', 'contact_name',
-                'schedule__event__slug', 'payment_screenshot')[:6])
+                'schedule__event__slug', 'schedule__event_id', 'payment_screenshot')[:6])
             storage = EventRegistration._meta.get_field('payment_screenshot').storage
             for row in recent_events:
                 shot = row.pop('payment_screenshot')
                 row['payment_screenshot_url'] = request.build_absolute_uri(storage.url(shot)) if shot else None
                 row['id'] = str(row['id'])
+                row['schedule__event_id'] = str(row['schedule__event_id'])
                 row['total_amount'] = str(row['total_amount'])
                 row['created_at'] = row['created_at'].isoformat()
         if request.user.has_perm('trips.view_tripschedule'):
@@ -520,10 +585,11 @@ class AdminDashboardView(APIView):
                 trip__status=ContentStatus.PUBLISHED,
                 trip__operational_status=Trip.Operational.OPEN,
             ).select_related('trip').order_by('starts_at').values(
-                'id', 'starts_at', 'capacity', 'seats_booked', 'trip__slug',
+                'id', 'starts_at', 'capacity', 'seats_booked', 'trip__slug', 'trip_id',
             )[:6])
             for row in upcoming_trips:
                 row['id'] = str(row['id'])
+                row['trip_id'] = str(row['trip_id'])
                 row['starts_at'] = row['starts_at'].isoformat()
 
         return Response({

@@ -35,7 +35,7 @@ TRANSITIONS = {
 
 
 class TranslationBase(Timestamped):
-    """One row per language. Publishing the parent is blocked until EN, TE and HI are all APPROVED (section 8/16)."""
+    """One row per language. English is required to publish the parent; Telugu and Hindi are optional and show as soon as they are added."""
     language = models.CharField(max_length=2, choices=Language.choices)
     title = models.CharField(max_length=255)
     summary = models.TextField(blank=True)
@@ -63,7 +63,7 @@ class TranslationBase(Timestamped):
 
 
 class Publishable(models.Model):
-    """Mixin for a parent whose translations gate publication."""
+    """Mixin for content with per-language text. Publishing needs English only; other languages are optional."""
     status = models.CharField(max_length=20, choices=ContentStatus.choices, default=ContentStatus.DRAFT, db_index=True)
     publish_at = models.DateTimeField(null=True, blank=True, help_text='If set (status Scheduled), goes live at this time.')
     published_at = models.DateTimeField(null=True, blank=True)
@@ -75,18 +75,20 @@ class Publishable(models.Model):
         raise NotImplementedError
 
     def missing_approvals(self):
-        approved = {t.language for t in self.translation_rows() if t.status in (ContentStatus.APPROVED, ContentStatus.PUBLISHED)}
-        return [lang for lang, _ in Language.choices if lang not in approved]
+        """Only an English title is required to publish. Telugu and Hindi are optional: missing ones show the English text."""
+        has_english = self.translation_rows().filter(language='en').exclude(status=ContentStatus.REJECTED).exclude(title='').exists()
+        return [] if has_english else ['en']
 
     def publish(self, when=None):
-        missing = self.missing_approvals()
-        if missing:
-            raise ValidationError(f'Cannot publish: approved translations missing for {", ".join(m.upper() for m in missing)}.')
+        if self.missing_approvals():
+            raise ValidationError('Add an English title before publishing. Telugu and Hindi are optional; '
+                                  'where they are missing the website shows the English text.')
         if when and when > timezone.now():
             self.status, self.publish_at = ContentStatus.SCHEDULED, when
         else:
             self.status, self.published_at = ContentStatus.PUBLISHED, timezone.now()
-            self.translation_rows().filter(status=ContentStatus.APPROVED).update(status=ContentStatus.PUBLISHED)
+            # every language that has been added goes live with it (no separate review needed)
+            self.translation_rows().exclude(status=ContentStatus.REJECTED).update(status=ContentStatus.PUBLISHED)
         self.save()
 
 

@@ -172,6 +172,8 @@ def schema_for(resource: Resource, request=None):
         if isinstance(relation, serializers.PrimaryKeyRelatedField):
             value['many'] = isinstance(field, serializers.ManyRelatedField)
             qs = relation.get_queryset()
+            if qs is not None and qs.model is MediaAsset:
+                value['media'] = True   # the admin shows an image upload box instead of a dropdown
             if qs is not None and qs.count() <= 200:
                 options = []
                 for obj in qs[:200]:

@@ -16,13 +16,25 @@ class PublishGateTests(TenantTestCase):
             DestinationTranslation.objects.create(destination=d, language=l, title=f'T-{l}', status=ContentStatus.APPROVED)
         return d
 
-    def test_publish_blocked_without_all_three_approved(self):                   # scenario 15
-        d = self.make(['en', 'te'])
+    def test_publish_needs_only_english(self):
+        d = self.make([])
         with self.assertRaises(ValidationError) as cm:
             d.publish()
-        self.assertIn('HI', cm.exception.messages[0])
+        self.assertIn('English', cm.exception.messages[0])
+        DestinationTranslation.objects.create(destination=d, language='en', title='Golconda')   # draft, never reviewed
+        d.publish()
         d.refresh_from_db()
-        self.assertNotEqual(d.status, ContentStatus.PUBLISHED)
+        self.assertEqual(d.status, ContentStatus.PUBLISHED)
+
+    def test_missing_languages_fall_back_to_english(self):
+        d = self.make([])
+        DestinationTranslation.objects.create(destination=d, language='en', title='Golconda', summary='Old fort')
+        d.publish()
+        self.assertEqual(APIClient().get('/api/v1/destinations/?lang=hi').data['results'][0]['name'], 'Golconda')
+        # a Telugu title added later shows straight away; its empty summary still falls back to English
+        DestinationTranslation.objects.create(destination=d, language='te', title='గోల్కొండ')
+        row = APIClient().get('/api/v1/destinations/?lang=te').data['results'][0]
+        self.assertEqual((row['name'], row['summary']), ('గోల్కొండ', 'Old fort'))
 
     def test_publish_allowed_when_all_approved_and_public_api_shows_it(self):
         d = self.make(['en', 'te', 'hi'])
@@ -82,3 +94,34 @@ class HomepageSiteSettingsTests(TenantTestCase):
         Testimonial.objects.create(author_name='Hidden', quote_en='Draft')
         names = [t['author_name'] for t in APIClient().get('/api/v1/testimonials/?lang=en').data]
         self.assertEqual(names, ['Shown'])
+
+
+class UploadDestinationPhotosTests(TenantTestCase):
+    """The photo upload command attaches covers and gallery photos, and is safe to run twice."""
+
+    def test_command_sets_cover_and_gallery_and_is_idempotent(self):
+        import tempfile
+        from io import StringIO
+        from django.core.management import call_command
+        from django.test import override_settings
+        from .models import Destination, DestinationMedia, DestinationTranslation, MediaAsset
+        tmp = tempfile.mkdtemp()
+        storage = {'default': {'BACKEND': 'django.core.files.storage.FileSystemStorage', 'OPTIONS': {'location': tmp}},
+                   'staticfiles': {'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage'}}
+        d = Destination.objects.create(slug='golconda-fort')
+        DestinationTranslation.objects.create(destination=d, language='en', title='Golconda Fort')
+        with override_settings(MEDIA_ROOT=tmp, STORAGES=storage, AWS_STORAGE_BUCKET_NAME=''):
+            call_command('upload_destination_photos', '--allow-local', stdout=StringIO())
+            call_command('upload_destination_photos', '--allow-local', stdout=StringIO())   # second run changes nothing
+        d.refresh_from_db()
+        self.assertEqual(d.cover.alt_text, 'Stone walls of Golconda Fort')
+        self.assertEqual(DestinationMedia.objects.filter(destination=d).count(), 2)        # cover + gallery photo
+        self.assertEqual(MediaAsset.objects.filter(folder__name='Destination photos').count(), 2)
+        self.assertIn('Bernard Gagnon', d.cover.credit)                                   # photo credit kept with the image
+
+    def test_command_refuses_without_s3_unless_allowed(self):
+        from django.core.management import CommandError, call_command
+        from django.test import override_settings
+        with override_settings(AWS_STORAGE_BUCKET_NAME=''):
+            with self.assertRaises(CommandError):
+                call_command('upload_destination_photos')

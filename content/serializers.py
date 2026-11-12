@@ -3,11 +3,19 @@ from rest_framework import serializers
 from . import models as m
 
 
+def visible_translations(obj):
+    """Every language that has been added (no review step needed); only rejected ones are hidden."""
+    return {t.language: t for t in obj.translations.all() if t.status != m.ContentStatus.REJECTED}
+
+
 def pick(obj, lang, field):
-    """Language-specific text with English fallback (only PUBLISHED translations are exposed)."""
-    rows = {t.language: t for t in obj.translations.all() if t.status == m.ContentStatus.PUBLISHED}
-    t = rows.get(lang) or rows.get('en')
-    return getattr(t, field, '') if t else ''
+    """Text in the visitor's language; anything not translated (whole row or just this field) falls back to English."""
+    rows = visible_translations(obj)
+    for code in (lang, 'en'):
+        value = getattr(rows.get(code), field, '') if rows.get(code) else ''
+        if value:
+            return value
+    return ''
 
 
 class DestinationSerializer(serializers.ModelSerializer):
@@ -62,7 +70,7 @@ class CmsPageSerializer(serializers.ModelSerializer):
     def get_body(self, o): return pick(o, self.context.get('lang', 'en'), 'body')
     def get_blocks(self, o):
         lang = self.context.get('lang', 'en')
-        rows = {t.language: t for t in o.translations.all() if t.status == m.ContentStatus.PUBLISHED}
+        rows = visible_translations(o)
         t = rows.get(lang) or rows.get('en')
         return {**(o.blocks_schema or {}), **(t.blocks if t else {})}
 

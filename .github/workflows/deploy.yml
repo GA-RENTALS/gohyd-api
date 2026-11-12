@@ -92,6 +92,11 @@ jobs:
             # Apply pending migrations
             docker compose exec -T web python manage.py migrate --noinput
 
+            # Upload new destination photos from content/seed_assets to S3 (does nothing if already done).
+            # A storage problem must not roll back the release, so it only warns.
+            docker compose exec -T web python manage.py upload_destination_photos \
+              || echo "WARNING: destination photos were not uploaded to S3; run 'python manage.py upload_destination_photos' after fixing storage access."
+
             # Health checks: verify Django DB connection and Celery worker response
             if ! docker compose exec -T web python manage.py check --database default \
               || ! docker exec -t gohyd_celery_worker celery -A config inspect ping --timeout 10; then

@@ -72,7 +72,7 @@ def _r(key, module, label, model, **kwargs):
 RESOURCES = {
     r.key: r for r in [
         # Trips and destinations
-        _r('trips', 'trips', 'Trips', Trip, mode='create_update', search_fields=('slug',), ordering_fields=('created_at', 'sort_order', 'status'), read_only_fields=('status', 'publish_at', 'published_at')),
+        _r('trips', 'trips', 'Trips', Trip, search_fields=('slug',), ordering_fields=('created_at', 'sort_order', 'status'), read_only_fields=('status', 'publish_at', 'published_at')),
         _r('trip-schedules', 'trips', 'Trip schedules', TripSchedule, search_fields=('trip__slug',), ordering_fields=('starts_at', 'created_at')),
         _r('trip-categories', 'trips', 'Categories (trips & events)', TripCategory, search_fields=('name', 'slug'), ordering_fields=('sort_order', 'name')),
         _r('trip-translations', 'trips', 'Trip translations', TripTranslation, search_fields=('title', 'language'), read_only_fields=('status', 'reviewed_by', 'approved_at')),
@@ -103,7 +103,7 @@ RESOURCES = {
         _r('event-faqs', 'events', 'Event FAQs', EventFAQ, search_fields=('event__slug', 'question_en')),
         _r('event-participants', 'participants', 'Event participants', EventParticipant, mode='update', personal_data=True),
         _r('event-attendance', 'participants', 'Event attendance', EventAttendance, mode='update', personal_data=True),
-        _r('destinations', 'destinations', 'Destinations', Destination, mode='create_update', search_fields=('slug', 'region'), ordering_fields=('sort_order', 'created_at'), read_only_fields=('status', 'publish_at', 'published_at')),
+        _r('destinations', 'destinations', 'Destinations', Destination, search_fields=('slug', 'region'), ordering_fields=('sort_order', 'created_at'), read_only_fields=('status', 'publish_at', 'published_at')),
         _r('destination-categories', 'destinations', 'Destination categories', DestinationCategory, search_fields=('name', 'slug')),
         _r('destination-translations', 'destinations', 'Translations', DestinationTranslation, search_fields=('title', 'language'), read_only_fields=('status', 'reviewed_by', 'approved_at')),
         _r('destination-activities', 'destinations', 'Activities', DestinationActivity, search_fields=('name',)),
