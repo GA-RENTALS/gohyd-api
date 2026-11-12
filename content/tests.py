@@ -125,3 +125,14 @@ class UploadDestinationPhotosTests(TenantTestCase):
         with override_settings(AWS_STORAGE_BUCKET_NAME=''):
             with self.assertRaises(CommandError):
                 call_command('upload_destination_photos')
+
+
+class PublicListPageSizeTests(TenantTestCase):
+    def test_lists_return_up_to_100_when_asked(self):
+        from .models import Destination
+        for i in range(15):
+            Destination.objects.create(slug=f'place-{i}', status=ContentStatus.PUBLISHED)
+        self.assertEqual(len(APIClient().get('/api/v1/destinations/').data['results']), 12)
+        r = APIClient().get('/api/v1/destinations/?page_size=100').data
+        self.assertEqual((len(r['results']), r['next']), (15, None))
+        self.assertEqual(len(APIClient().get('/api/v1/destinations/?page_size=5000').data['results']), 15)   # capped at 100

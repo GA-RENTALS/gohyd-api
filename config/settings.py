@@ -178,6 +178,8 @@ if AWS_STORAGE_BUCKET_NAME:  # section 2: files on S3 (served through CloudFront
     AWS_S3_FILE_OVERWRITE = False
     AWS_DEFAULT_ACL = None
     AWS_QUERYSTRING_AUTH = False
+    # Upload names never repeat (FILE_OVERWRITE is off), so browsers may keep a file for a year.
+    AWS_S3_OBJECT_PARAMETERS = {'CacheControl': 'public, max-age=31536000, immutable'}
     _uploads = {'BACKEND': 'storages.backends.s3.S3Storage'}
 STORAGES = {'default': _uploads, 'staticfiles': {'BACKEND': 'whitenoise.storage.CompressedStaticFilesStorage'}}
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
@@ -240,7 +242,7 @@ REST_FRAMEWORK = {
         'track': '600/hour',
         'enquiry': '20/hour',
     },
-    'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
+    'DEFAULT_PAGINATION_CLASS': 'core.pagination.SitePagination',
     'PAGE_SIZE': 12,
 }
 SIMPLE_JWT = {
