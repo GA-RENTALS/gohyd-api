@@ -1,0 +1,502 @@
+{
+ "khajaguda": {
+  "file": "khajaguda.jpg",
+  "alt": "Granite rocks above Khajaguda Lake",
+  "representative": false,
+  "width": 1600,
+  "height": 898,
+  "credit": "Bobby9030 / CC BY-SA 4.0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Khajaguda_lake_view.jpg",
+  "commons_title": "File:Khajaguda lake view.jpg"
+ },
+ "rachakonda": {
+  "file": "rachakonda.jpg",
+  "alt": "Gateway of Rachakonda Fort",
+  "representative": false,
+  "width": 1600,
+  "height": 1200,
+  "credit": "Ylnr123 / CC BY-SA 3.0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Main_entrance_in_south.JPG",
+  "commons_title": "File:Main entrance in south.JPG"
+ },
+ "ananthagiri-hills-day": {
+  "file": "ananthagiri-hills-day.jpg",
+  "alt": "Forested Ananthagiri Hills, Vikarabad",
+  "representative": false,
+  "width": 1600,
+  "height": 1060,
+  "credit": "Praveen120 / CC BY-SA 3.0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Ananthagiri_Hills.JPG",
+  "commons_title": "File:Ananthagiri Hills.JPG"
+ },
+ "ananthagiri-hills-camping": {
+  "file": "ananthagiri-hills-camping.jpg",
+  "alt": "Trekking area in the Ananthagiri forest",
+  "representative": false,
+  "width": 1600,
+  "height": 1200,
+  "credit": "Tanukusreeharsha / CC BY-SA 4.0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Ananthagiri_Hills_Trekking_Area.jpg",
+  "commons_title": "File:Ananthagiri Hills Trekking Area.jpg"
+ },
+ "pocharam-ride": {
+  "file": "pocharam-ride.jpg",
+  "alt": "Pocharam Lake",
+  "representative": false,
+  "width": 1138,
+  "height": 600,
+  "credit": "J.M.Garg / CC BY 3.0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:A_view_from_Pocharam_Lake_W_IMG_9990.jpg",
+  "commons_title": "File:A view from Pocharam Lake W IMG 9990.jpg"
+ },
+ "narsapur-forest-trek": {
+  "file": "narsapur-forest-trek.jpg",
+  "alt": "Dry deciduous forest of the Deccan (representative photo)",
+  "representative": true,
+  "width": 1600,
+  "height": 1200,
+  "credit": "Adityamadhav83 / CC BY-SA 3.0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Forest_at_Chintoor_in_Khammam_district,_Andhra_Pradesh.JPG",
+  "commons_title": "File:Forest at Chintoor in Khammam district, Andhra Pradesh.JPG"
+ },
+ "medak-bike-ride": {
+  "file": "medak-bike-ride.jpg",
+  "alt": "Medak Cathedral",
+  "representative": false,
+  "width": 1600,
+  "height": 1067,
+  "credit": "Ashok Vootla / CC BY-SA 4.0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Panoromic_view_of_Medak_Church.jpg",
+  "commons_title": "File:Panoromic view of Medak Church.jpg"
+ },
+ "somasila-day": {
+  "file": "somasila-day.jpg",
+  "alt": "Ancient temple at Somasila",
+  "representative": false,
+  "width": 1600,
+  "height": 1200,
+  "credit": "P. Madhusudan / CC0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Venkateshwara_Swamy_temple,_Somasila,_Telangana_23.jpg",
+  "commons_title": "File:Venkateshwara Swamy temple, Somasila, Telangana 23.jpg"
+ },
+ "somasila-camping": {
+  "file": "somasila-camping.jpg",
+  "alt": "Krishna backwaters at Somasila",
+  "representative": false,
+  "width": 1600,
+  "height": 1200,
+  "credit": "P. Madhusudan / CC0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Somasila,_Nagarkurnool_district,_Telangana.jpg",
+  "commons_title": "File:Somasila, Nagarkurnool district, Telangana.jpg"
+ },
+ "vizag-colony-day": {
+  "file": "vizag-colony-day.jpg",
+  "alt": "Fishing on the Nagarjuna Sagar backwaters",
+  "representative": false,
+  "width": 1600,
+  "height": 1200,
+  "credit": "Bhaskaranaidu / CC BY-SA 3.0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Fishing_in_nagarjuna_sagar..JPG",
+  "commons_title": "File:Fishing in nagarjuna sagar..JPG"
+ },
+ "vizag-colony-camping": {
+  "file": "vizag-colony-camping.jpg",
+  "alt": "Krishna river in Nalgonda district",
+  "representative": false,
+  "width": 1600,
+  "height": 1600,
+  "credit": "Rajasekhar1961 / CC BY-SA 4.0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Krishna_river_at_Vadapally_03.jpg",
+  "commons_title": "File:Krishna river at Vadapally 03.jpg"
+ },
+ "koil-sagar": {
+  "file": "koil-sagar.jpg",
+  "alt": "Sunrise at Koilsagar reservoir",
+  "representative": false,
+  "width": 1600,
+  "height": 1200,
+  "credit": "Kavali Chandrakanth KCK / CC0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Sunrise_At_Koilsagar_Project_Devarakadra_Mahabubnagar.jpg",
+  "commons_title": "File:Sunrise At Koilsagar Project Devarakadra Mahabubnagar.jpg"
+ },
+ "srirangapuram-and-pangal-fort": {
+  "file": "srirangapuram-and-pangal-fort.jpg",
+  "alt": "Lake beside the Sri Ranganayaka Swamy Temple, Srirangapuram",
+  "representative": false,
+  "width": 1600,
+  "height": 1200,
+  "credit": "Ms Sarah Welch / CC0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Sri_Ranganayaka_Swamy_temple_Srirangapur,_Wanaparthy_Telangana,_India_-_10.jpg",
+  "commons_title": "File:Sri Ranganayaka Swamy temple Srirangapur, Wanaparthy Telangana, India - 10.jpg"
+ },
+ "killa-ganpur": {
+  "file": "killa-ganpur.jpg",
+  "alt": "Hill-fort ruins in Telangana (representative photo)",
+  "representative": true,
+  "width": 1600,
+  "height": 1200,
+  "credit": "P. Madhusudan / CC0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Undrugonda_ruins_and_Narasimha_temple,_Suryapet_district,_Telangana_07.jpg",
+  "commons_title": "File:Undrugonda ruins and Narasimha temple, Suryapet district, Telangana 07.jpg"
+ },
+ "no-name-camping": {
+  "file": "no-name-camping.jpg",
+  "alt": "Tents by a lake (representative photo)",
+  "representative": true,
+  "width": 1600,
+  "height": 1200,
+  "credit": "Sunitnishar19 / CC BY-SA 4.0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Bhandardara.jpg",
+  "commons_title": "File:Bhandardara.jpg"
+ },
+ "utm-day": {
+  "file": "utm-day.jpg",
+  "alt": "Kayaks on a lake (representative photo)",
+  "representative": true,
+  "width": 1600,
+  "height": 1200,
+  "credit": "Wikinivii / CC BY-SA 4.0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Sattal_lake_with_kayak_boats.jpg",
+  "commons_title": "File:Sattal lake with kayak boats.jpg"
+ },
+ "utm-camping": {
+  "file": "utm-camping.jpg",
+  "alt": "Tents at a campsite (representative photo)",
+  "representative": true,
+  "width": 1600,
+  "height": 884,
+  "credit": "Indrajit Das / CC BY 4.0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:29RCCMAK_-_Tents_at_base_camp_of_Susunia_Hill.jpg",
+  "commons_title": "File:29RCCMAK - Tents at base camp of Susunia Hill.jpg"
+ },
+ "adilabad": {
+  "file": "adilabad.jpg",
+  "alt": "Gussadi dancers at the Dandari festival, Adilabad",
+  "representative": false,
+  "width": 1600,
+  "height": 1200,
+  "credit": "Pdp79892 / CC BY-SA 4.0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Dandari_Festival_-_Gussadi_-_VJIT_Photography_club.jpg",
+  "commons_title": "File:Dandari Festival - Gussadi - VJIT Photography club.jpg"
+ },
+ "tadoba-andhari-tiger-reserve": {
+  "file": "tadoba-andhari-tiger-reserve.jpg",
+  "alt": "Bengal tiger at Tadoba-Andhari Tiger Reserve",
+  "representative": false,
+  "width": 1600,
+  "height": 1067,
+  "credit": "Rohit Sharma / CC BY-SA 4.0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Bengal_tiger_at_Tadoba_Andhari_Tiger_Reserve,_Maharashtra,_India.jpg",
+  "commons_title": "File:Bengal tiger at Tadoba Andhari Tiger Reserve, Maharashtra, India.jpg"
+ },
+ "pench-day-safari": {
+  "file": "pench-day-safari.jpg",
+  "alt": "Forest track in Pench National Park",
+  "representative": false,
+  "width": 1600,
+  "height": 1064,
+  "credit": "Drashokk / CC BY-SA 4.0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Pench_National_Park_habitat_shot.jpg",
+  "commons_title": "File:Pench National Park habitat shot.jpg"
+ },
+ "chincholi": {
+  "file": "chincholi.jpg",
+  "alt": "Bay-backed shrike in Chincholi Wildlife Sanctuary",
+  "representative": false,
+  "width": 1600,
+  "height": 1067,
+  "credit": "Hari K  Patibanda / CC BY 2.0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Bay-backed_Shrike,_Chincholi_Wildlife_Sanctuary,_Telangana,_India_(50263109437).jpg",
+  "commons_title": "File:Bay-backed Shrike, Chincholi Wildlife Sanctuary, Telangana, India (50263109437).jpg"
+ },
+ "srirangapuram-pamapuram": {
+  "file": "srirangapuram-pamapuram.jpg",
+  "alt": "Carvings at the Sri Ranganayaka Swamy Temple, Srirangapuram",
+  "representative": false,
+  "width": 1600,
+  "height": 1200,
+  "credit": "Ms Sarah Welch / CC0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Sri_Ranganayaka_Swamy_temple_Srirangapur,_Wanaparthy_Telangana,_India_-_3.jpg",
+  "commons_title": "File:Sri Ranganayaka Swamy temple Srirangapur, Wanaparthy Telangana, India - 3.jpg"
+ },
+ "laknavaram-lake": {
+  "file": "laknavaram-lake.jpg",
+  "alt": "Laknavaram Lake",
+  "representative": false,
+  "width": 1600,
+  "height": 720,
+  "credit": "Pinakpani / CC BY 4.0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Laknavaram_Lake,_Laknavaram_in_Mulugu_district,_Telangana_01.jpg",
+  "commons_title": "File:Laknavaram Lake, Laknavaram in Mulugu district, Telangana 01.jpg"
+ },
+ "mallela-theertham": {
+  "file": "mallela-theertham.jpg",
+  "alt": "Mallela Theertham waterfall",
+  "representative": false,
+  "width": 1600,
+  "height": 904,
+  "credit": "Raghavendra Bashamalla / CC BY-SA 4.0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Mallela_theertham_waterfalls.jpg",
+  "commons_title": "File:Mallela theertham waterfalls.jpg"
+ },
+ "koilsagar-dam-trek-and-rappelling": {
+  "file": "koilsagar-dam-trek-and-rappelling.jpg",
+  "alt": "Hills around Koilsagar reservoir at sunrise",
+  "representative": false,
+  "width": 1600,
+  "height": 1067,
+  "credit": "Kavali Chandrakanth KCK / CC BY-SA 4.0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Sunrise_at_Koilsagar_Reservoir_Devarakadra_Mahabubnagar_Telangana_India.jpg",
+  "commons_title": "File:Sunrise at Koilsagar Reservoir Devarakadra Mahabubnagar Telangana India.jpg"
+ },
+ "nagarjuna-sagar": {
+  "file": "nagarjuna-sagar.jpg",
+  "alt": "Nagarjuna Sagar Dam",
+  "representative": false,
+  "width": 1600,
+  "height": 900,
+  "credit": "iMahesh / CC BY-SA 4.0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Nagarjuna_Sagar_dam_with_all_Crest_gates_closed_(Wide_angle).jpg",
+  "commons_title": "File:Nagarjuna Sagar dam with all Crest gates closed (Wide angle).jpg"
+ },
+ "umamaheshwaram": {
+  "file": "umamaheshwaram.jpg",
+  "alt": "Umamaheshwaram temple",
+  "representative": false,
+  "width": 1600,
+  "height": 900,
+  "credit": "Gurunagireddy / CC BY-SA 4.0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Uma_Maheshwara_Swamy_temple,_Telangana,_India,_2017.jpg",
+  "commons_title": "File:Uma Maheshwara Swamy temple, Telangana, India, 2017.jpg"
+ },
+ "pandavula-gutta-khammam": {
+  "file": "pandavula-gutta-khammam.jpg",
+  "alt": "Aerial view of Pandavula Gutta",
+  "representative": false,
+  "width": 1600,
+  "height": 1200,
+  "credit": "Sreekanth Vshots / CC BY-SA 4.0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:PANDAVULA_GUTTA_ARIAL_VIEW_02.jpg",
+  "commons_title": "File:PANDAVULA GUTTA ARIAL VIEW 02.jpg"
+ },
+ "bidar-fort": {
+  "file": "bidar-fort.jpg",
+  "alt": "Bidar Fort complex",
+  "representative": false,
+  "width": 1600,
+  "height": 1067,
+  "credit": "iMahesh / CC BY-SA 4.0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Bidar_fort_complex_from_Solah_Khambha_Masjid.jpg",
+  "commons_title": "File:Bidar fort complex from Solah Khambha Masjid.jpg"
+ },
+ "vemulawada": {
+  "file": "vemulawada.jpg",
+  "alt": "Shivaratri festival at the Raja Rajeshwara Temple, Vemulawada",
+  "representative": false,
+  "width": 1600,
+  "height": 1067,
+  "credit": "Department of Language and Culture, Government of Telangana / CC BY-SA 4.0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:OgguDolu_Performance_in_Shivarathri_Festival_at_Raja_Rajeswara_Temple,_Vemulawada_(05.03.2019)_03.jpg",
+  "commons_title": "File:OgguDolu Performance in Shivarathri Festival at Raja Rajeswara Temple, Vemulawada (05.03.2019) 03.jpg"
+ },
+ "kuntala-falls": {
+  "file": "kuntala-falls.jpg",
+  "alt": "Kuntala Falls",
+  "representative": false,
+  "width": 1600,
+  "height": 1200,
+  "credit": "రహ్మానుద్దీన్ / CC BY-SA 3.0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Kuntala_waterfalla,_both_streams.jpg",
+  "commons_title": "File:Kuntala waterfalla, both streams.jpg"
+ },
+ "edupayala-vana-durga-bhavani-temple": {
+  "file": "edupayala-vana-durga-bhavani-temple.jpg",
+  "alt": "Edupayala Vana Durga Bhavani Temple",
+  "representative": false,
+  "width": 1600,
+  "height": 819,
+  "credit": "Prashant Kharote / CC BY-SA 4.0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Edupayalu_Vana_Durga_Bhavani_temple,_Medak,_Telangana.jpg",
+  "commons_title": "File:Edupayalu Vana Durga Bhavani temple, Medak, Telangana.jpg"
+ },
+ "jurala-dam": {
+  "file": "jurala-dam.jpg",
+  "alt": "Krishna river at the Lower Jurala project",
+  "representative": false,
+  "width": 1600,
+  "height": 1200,
+  "credit": "Naidugari Jayanna / CC BY-SA 4.0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Krishna_River_at_Lower_Jural_Project.jpg",
+  "commons_title": "File:Krishna River at Lower Jural Project.jpg"
+ },
+ "koilkonda-fort-and-koilsagar-dam": {
+  "file": "koilkonda-fort-and-koilsagar-dam.jpg",
+  "alt": "Koilkonda Fort",
+  "representative": false,
+  "width": 1600,
+  "height": 1067,
+  "credit": "Kavali Chandrakanth KCK / CC BY-SA 4.0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Koilkonda_Fort_Mahabunagar_Telanagana.jpg",
+  "commons_title": "File:Koilkonda Fort Mahabunagar Telanagana.jpg"
+ },
+ "ethipothala-falls": {
+  "file": "ethipothala-falls.jpg",
+  "alt": "Ethipothala Falls",
+  "representative": false,
+  "width": 1600,
+  "height": 878,
+  "credit": "Shashiclicks / CC BY-SA 4.0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Ethipothala_waterfalls.jpg",
+  "commons_title": "File:Ethipothala waterfalls.jpg"
+ },
+ "kinnerasani-dam-and-wildlife-sanctuary": {
+  "file": "kinnerasani-dam-and-wildlife-sanctuary.jpg",
+  "alt": "Kinnerasani reservoir",
+  "representative": false,
+  "width": 1600,
+  "height": 1200,
+  "credit": "Adbh266 / CC BY-SA 4.0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Kinnerasani.jpg",
+  "commons_title": "File:Kinnerasani.jpg"
+ },
+ "bheemuni-paadam-waterfalls": {
+  "file": "bheemuni-paadam-waterfalls.jpg",
+  "alt": "Forest waterfall in Telangana (representative photo)",
+  "representative": true,
+  "width": 1200,
+  "height": 800,
+  "credit": "Shivaranisiddula / CC BY 4.0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Kuntala_waterfall_4.jpg",
+  "commons_title": "File:Kuntala waterfall 4.jpg"
+ },
+ "damagundam-ramaklingeshwara-temple": {
+  "file": "damagundam-ramaklingeshwara-temple.jpg",
+  "alt": "Vikarabad forest (representative photo)",
+  "representative": true,
+  "width": 1600,
+  "height": 1200,
+  "credit": "Tanukusreeharsha / CC BY-SA 4.0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Banyan_tree_Ananthagiri.jpg",
+  "commons_title": "File:Banyan tree Ananthagiri.jpg"
+ },
+ "kotpally-reservoir": {
+  "file": "kotpally-reservoir.jpg",
+  "alt": "Kayaking at Kotpally reservoir",
+  "representative": false,
+  "width": 1600,
+  "height": 1067,
+  "credit": "Kotpally / CC BY-SA 4.0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Kayaking_Kotepally.jpg",
+  "commons_title": "File:Kayaking Kotepally.jpg"
+ },
+ "vizag-colony-backwaters": {
+  "file": "vizag-colony-backwaters.jpg",
+  "alt": "Nagarjuna Sagar reservoir",
+  "representative": false,
+  "width": 1600,
+  "height": 1200,
+  "credit": "Vali Sharon / CC BY-SA 4.0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Panoramic_view_of_Nagarjuna_Sagar_reservoir_with_lush_green_hills.jpg",
+  "commons_title": "File:Panoramic view of Nagarjuna Sagar reservoir with lush green hills.jpg"
+ },
+ "bogata-waterfall": {
+  "file": "bogata-waterfall.jpg",
+  "alt": "Bogatha Waterfall",
+  "representative": false,
+  "width": 1600,
+  "height": 900,
+  "credit": "Manikanta1973 / CC BY-SA 4.0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Bogatha_Waterfall_top_view.jpg",
+  "commons_title": "File:Bogatha Waterfall top view.jpg"
+ },
+ "kavadipally-forest-trek": {
+  "file": "kavadipally-forest-trek.jpg",
+  "alt": "Granite rock formations near Hyderabad (representative photo)",
+  "representative": true,
+  "width": 1600,
+  "height": 1200,
+  "credit": "melgupta / CC BY-SA 2.0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Hyderabad_City_rock_formations_View_2005.jpg",
+  "commons_title": "File:Hyderabad City rock formations View 2005.jpg"
+ },
+ "kondapochamma-lake": {
+  "file": "kondapochamma-lake.jpg",
+  "alt": "Kaleshwaram project, which feeds Kondapochamma Sagar (representative photo)",
+  "representative": true,
+  "width": 1600,
+  "height": 875,
+  "credit": "Megha Engineering and Infrastructures Ltd / CC BY 3.0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Lakshmi_pumphouse_aerial_view.png",
+  "commons_title": "File:Lakshmi pumphouse aerial view.png"
+ },
+ "dharmapuri": {
+  "file": "dharmapuri.jpg",
+  "alt": "Lakshmi Narasimha Swamy Temple, Dharmapuri",
+  "representative": false,
+  "width": 1600,
+  "height": 1200,
+  "credit": "P. Madhusudan / CC0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Lakshmi_Narasimha_Swamy_temple,_Dharmapuri_Telangana_-_23.jpg",
+  "commons_title": "File:Lakshmi Narasimha Swamy temple, Dharmapuri Telangana - 23.jpg"
+ },
+ "muthyamdhara-waterfalls": {
+  "file": "muthyamdhara-waterfalls.jpg",
+  "alt": "Forest in Mulugu district (representative photo)",
+  "representative": true,
+  "width": 1600,
+  "height": 1216,
+  "credit": "Manikanta1973 / CC BY-SA 4.0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Eturnagaram_forest.jpg",
+  "commons_title": "File:Eturnagaram forest.jpg"
+ },
+ "moula-ali-hill": {
+  "file": "moula-ali-hill.jpg",
+  "alt": "Moula Ali hill",
+  "representative": false,
+  "width": 1600,
+  "height": 1069,
+  "credit": "Rajeshodayanchal / CC BY-SA 4.0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Moula-Ali-Hyderabad-Telangana_08.jpg",
+  "commons_title": "File:Moula-Ali-Hyderabad-Telangana 08.jpg"
+ },
+ "chityal-hills": {
+  "file": "chityal-hills.jpg",
+  "alt": "Deccan landscape near Hyderabad (representative photo)",
+  "representative": true,
+  "width": 1545,
+  "height": 1024,
+  "credit": "Zeman / CC BY-SA 3.0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Dek%C3%A1nsk%C3%A1_krajina_u_Hajdar%C3%A1b%C3%A1du.jpg",
+  "commons_title": "File:Dekánská krajina u Hajdarábádu.jpg"
+ },
+ "gunrock-hill": {
+  "file": "gunrock-hill.jpg",
+  "alt": "Boulders on Mahendra Hills, next to Gun Rock, Secunderabad",
+  "representative": false,
+  "width": 1600,
+  "height": 1063,
+  "credit": "Bruno Jehle / CC BY-SA 3.0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Bolders_on_Mahendra_Hills,_India.jpg",
+  "commons_title": "File:Bolders on Mahendra Hills, India.jpg"
+ },
+ "kondamadugu-hills": {
+  "file": "kondamadugu-hills.jpg",
+  "alt": "Bhuvanagiri rock, near Kondamadugu (representative photo)",
+  "representative": true,
+  "width": 1600,
+  "height": 1205,
+  "credit": "Kasyap / CC0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Bhuvanagiri_Fort_overview.jpg",
+  "commons_title": "File:Bhuvanagiri Fort overview.jpg"
+ },
+ "octopus-view-point": {
+  "file": "octopus-view-point.jpg",
+  "alt": "Nallamala hills near Srisailam",
+  "representative": false,
+  "width": 1600,
+  "height": 901,
+  "credit": "Rajib Ghosh / CC BY 2.0 / Wikimedia Commons",
+  "source": "https://commons.wikimedia.org/wiki/File:Nallamala_Hills_near_Srisailam_02.jpg",
+  "commons_title": "File:Nallamala Hills near Srisailam 02.jpg"
+ }
+}

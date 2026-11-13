@@ -343,13 +343,19 @@ class EventDetailSerializer(EventListSerializer):
     seo_description = serializers.SerializerMethodField()
     reservation_hold_hours = serializers.IntegerField(read_only=True)
     payment = serializers.SerializerMethodField()
+    cover_alt = serializers.SerializerMethodField()
+    cover_credit = serializers.SerializerMethodField()
 
     class Meta(EventListSerializer.Meta):
         fields = EventListSerializer.Meta.fields + ('body', 'venue_name', 'venue_address', 'schedules', 'itineraries',
                                                     'things_to_bring', 'inclusions', 'exclusions', 'format_details',
                                                     'rules', 'reservation_hold_hours', 'highlights', 'faqs',
                                                     'headline', 'image_caption', 'format_note', 'schedule_note',
-                                                    'seo_title', 'seo_description', 'payment')
+                                                    'seo_title', 'seo_description', 'payment', 'cover_alt',
+                                                    'cover_credit')
+
+    def get_cover_alt(self, o): return o.cover.alt_text if o.cover_id else ''
+    def get_cover_credit(self, o): return o.cover.credit if o.cover_id else ''
 
     def get_payment(self, o): return event_payment_info(o, self.context.get('request'))
     def get_body(self, o): return pick(o, self._lang(), 'body')
