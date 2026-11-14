@@ -21,6 +21,8 @@ TEMPLATE_PARAMS = {
     'trip_reminder': ['name', 'trip', 'date'],
     'payment_receipt': ['name', 'amount'],
     'event_payment_proof': ['name', 'phone', 'event', 'date', 'participants', 'amount', 'reference'],
+    'event_confirmed': ['name', 'event', 'date', 'participants', 'reference'],
+    'event_cancelled': ['name', 'event', 'reference'],
 }
 
 

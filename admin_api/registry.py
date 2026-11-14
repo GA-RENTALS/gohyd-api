@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 
 from django.contrib.auth.models import Group
 
-from accounts.models import CustomerProfile, LoginHistory, ResourceAssignment, Team, User
+from accounts.models import CustomerProfile, LoginHistory, User
 from notifications.models import (BackupExecutionLog, IntegrationConfiguration, IntegrationExecutionLog, IntegrationHealthStatus,
                                    IntegrationProvider, NotificationDeliveryLog, NotificationFailure, NotificationJob,
                                    NotificationPreference, NotificationTemplate, NotificationTranslation, SystemHealthLog,
@@ -145,9 +145,9 @@ RESOURCES = {
         # Customers, access control, vendors and field operations
         _r('customers', 'customers', 'Customers', User, mode='update', fields=('id', 'phone_number', 'full_name', 'email', 'preferred_language', 'date_joined', 'is_active'), read_only_fields=('id', 'phone_number', 'date_joined', 'is_active'), search_fields=('phone_number', 'full_name', 'email'), personal_data=True, queryset_filter={'kind': User.Kind.CUSTOMER}, ordering_fields=('date_joined', 'full_name')),
         _r('customer-profiles', 'customers', 'Customer profiles', CustomerProfile, mode='update', personal_data=True),
-        _r('teams', 'permissions', 'Teams', Team, search_fields=('name',)),
+        # Teams and per-record resource assignments are not enforced by any permission check, so they are not offered
+        # here (they would suggest access is limited when it is not). Roles are managed on the Team & roles page.
         _r('staff-groups', 'permissions', 'Permission groups', Group, search_fields=('name',)),
-        _r('resource-assignments', 'permissions', 'Resource assignments', ResourceAssignment, personal_data=True),
         _r('vendors', 'vendors', 'Vendors', Vendor, search_fields=('name', 'gstin')),
         _r('vendor-contacts', 'vendors', 'Vendor contacts', VendorContact, personal_data=True),
         _r('vendor-services', 'vendors', 'Vendor services', VendorService),

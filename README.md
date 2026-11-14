@@ -4,7 +4,7 @@ The Django API behind the GoHyderabad website, customer area and staff admin pan
 
 **Stack:** Python 3.12 · Django 6 · Django REST Framework · PostgreSQL (row-level security) · Redis · Celery · JWT · S3 (django-storages) · Razorpay · Meta WhatsApp Cloud API.
 
-> Read next: [GOHYDERABAD.md](GOHYDERABAD.md) (architecture and requirements coverage) and [FIXES.md](FIXES.md) (what is left to do, by priority). The web app lives in the sibling project `GoHyderabad/`.
+> Read next: [GOHYDERABAD.md](../GOHYDERABAD.md) (architecture and requirements coverage) and [FIXES.md](../FIXES.md) (what is left to do, by priority). Latest audit: [BUGS.md](../BUGS.md), [GAPS.md](../GAPS.md), [ADMIN_ENHANCEMENTS.md](../ADMIN_ENHANCEMENTS.md). The web app lives in the sibling project `gohyd-ui/`.
 
 ## Contents
 
@@ -371,7 +371,7 @@ Other checks: `python manage.py check`, `python manage.py check --deploy`, `pip 
 
 ## 17. Going to production
 
-A short checklist (full list with priorities in [FIXES.md](FIXES.md)):
+A short checklist (full list with priorities in [FIXES.md](../FIXES.md)):
 
 - `DEBUG=False`, strong `SECRET_KEY`, real `ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS`, `CSRF_TRUSTED_ORIGINS`.
 - `SECURE_SSL_REDIRECT=True` (cookies and HSTS turn on automatically). Run `python manage.py check --deploy` until clean.

@@ -21,7 +21,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from accounts.models import ResourceAssignment, User
+from accounts.models import User
 from bookings.models import Booking, BookingParticipant, CheckoutOrder
 from bookings.services import BookingError, grant_departure_exception
 from core.models import AuditLog, DataAccessLog
@@ -34,7 +34,7 @@ from content.models import ContentStatus, Destination
 from operations.models import SafetyWaiver
 from trips.models import Event, EventRegistration, Trip, TripSchedule
 
-from .permissions import StaffOnly, has_staff_membership
+from .permissions import StaffOnly, has_staff_membership, require_staff_perm
 from .registry import MODULE_LABELS, RESOURCES, Resource, get_resource, module_resource_keys
 from .serializers import MAX_UPLOAD_MB, resource_serializer, schema_for
 
@@ -208,12 +208,15 @@ class AdminSessionView(APIView):
     permission_classes = [StaffOnly]
 
     def get(self, request):
+        from .team import can_view_team   # team.py builds on this module
         return Response({
             'id': request.user.pk,
             'name': request.user.full_name or request.user.phone_number,
             'phone_number': request.user.phone_number,
             'email': request.user.email,
             'permissions': sorted(request.user.get_all_permissions()),
+            # pages that aren't tied to one table's permission
+            'features': {'team': can_view_team(request)},
         })
 
 
@@ -384,7 +387,7 @@ class StaffActionView(APIView):
 
     def _verify_payment(self, request):
         resource = _resolve('payments')
-        _require_model_permission(request, resource, 'change')
+        require_staff_perm(request, 'payments.change_payment', 'You do not have permission to verify payments.')
         payment = Payment.objects.get(pk=request.data.get('payment_id'))
         payment_services.verify_manual_payment(request.user, payment, bool(request.data.get('approved')), str(request.data.get('note', '')), request)
         _audit(request, 'payments.verify', resource, payment, after=_serialize(resource, payment, request))
@@ -392,8 +395,7 @@ class StaffActionView(APIView):
 
     def _approve_refund(self, request):
         resource = _resolve('refunds')
-        if not request.user.has_perm(_permission_name(resource, 'change')):
-            raise PermissionDenied('You do not have permission to approve refunds.')
+        require_staff_perm(request, 'payments.change_refund', 'You do not have permission to approve refunds.')
         refund = Refund.objects.get(pk=request.data.get('refund_id'))
         before = _serialize(resource, refund, request)
         payment_services.approve_refund(request.user, refund, request)
@@ -402,8 +404,7 @@ class StaffActionView(APIView):
 
     def _record_manual_payment(self, request):
         resource = _resolve('payments')
-        if not request.user.has_perm(_permission_name(resource, 'add')):
-            raise PermissionDenied('You do not have permission to record payments.')
+        require_staff_perm(request, 'payments.add_payment', 'You do not have permission to record payments.')
         try:
             checkout = CheckoutOrder.objects.get(pk=request.data.get('checkout_id'))
             amount = Decimal(str(request.data.get('amount', '')))
@@ -470,8 +471,7 @@ class StaffActionView(APIView):
         """Cancel one trip booking: reuses bookings.services.cancel_booking (releases seats, requests the policy refund)."""
         from bookings.services import cancel_booking
         resource = _resolve('bookings')
-        if not request.user.has_perm('bookings.change_booking'):
-            raise PermissionDenied('You do not have permission to cancel bookings.')
+        require_staff_perm(request, 'bookings.change_booking', 'You do not have permission to cancel bookings.')
         booking = Booking.objects.get(pk=request.data.get('booking_id'))
         before = _serialize(resource, booking, request)
         booking = cancel_booking(booking, request.user, str(request.data.get('reason', ''))[:255], request=request)
@@ -619,6 +619,15 @@ class AdminDashboardView(APIView):
                 add('safety-waiver', 'warning', 'Add an approved safety waiver',
                     'Checkout cannot continue until an active waiver with English text is configured.',
                     '/admin/logistics/safety-waivers')
+
+        if user.has_perm('trips.view_event'):
+            unpriced = (Event.objects.filter(status=ContentStatus.PUBLISHED, is_free=False, price__lte=0,
+                                             schedules__starts_at__gte=timezone.now()).distinct())
+            count = unpriced.count()
+            if count:
+                add('event-price', 'warning', f'{count} event{"" if count == 1 else "s"} with a date but no price',
+                    'Customers can only register interest until you set a price (or tick "Is free" for a free event).',
+                    f'/admin/overview/event/{unpriced.first().pk}' if count == 1 else '/admin/events')
 
         if user.has_perm('payments.view_businessentity'):
             entity = BusinessEntity.objects.filter(is_default=True).first()

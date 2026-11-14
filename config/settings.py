@@ -216,6 +216,7 @@ CELERY_BEAT_SCHEDULE = {
 
 CORS_ALLOWED_ORIGINS = [o.strip() for o in os.getenv('CORS_ALLOWED_ORIGINS', '').split(',') if o.strip()]
 CORS_ALLOW_CREDENTIALS = False
+CORS_EXPOSE_HEADERS = ['Content-Disposition']   # the admin reads the file name of CSV exports
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (

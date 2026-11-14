@@ -71,12 +71,45 @@ class EventBookingCreateView(APIView):
         try:
             booking = create_event_booking(
                 event_slug=v['event'], schedule_id=v['schedule'], name=v['name'], phone=v['phone'], email=v.get('email', ''),
-                participant_count=v['participant_count'], note=v.get('note', ''))
+                participant_count=v['participant_count'], note=v.get('note', ''), coupon_code=v.get('coupon', '').strip())
         except DjangoValidationError as exc:
             detail = exc.message_dict if hasattr(exc, 'error_dict') else {'detail': exc.messages}
             return Response(detail, status=status.HTTP_400_BAD_REQUEST)
         return Response(s.EventBookingSerializer(booking, context={'request': request, 'lang': request.query_params.get('lang', 'en')}).data,
                         status=status.HTTP_201_CREATED)
+
+
+class EventCouponPreviewView(APIView):
+    """What a coupon would take off an event booking. Nothing is reserved; booking checks the coupon again."""
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    throttle_classes = [TrustedScopedRateThrottle]
+    throttle_scope = 'enquiry'
+
+    @extend_schema(tags=['Events'], request=s.EventCouponPreviewSerializer)
+    def post(self, request):
+        from accounts.models import normalize_phone
+        from bookings.coupons import CouponError, check_event_coupon, event_discount, find_coupon
+        from .event_booking import is_bookable
+
+        data = s.EventCouponPreviewSerializer(data=request.data)
+        data.is_valid(raise_exception=True)
+        v = data.validated_data
+        event = m.Event.objects.filter(slug=v['event'], status=ContentStatus.PUBLISHED).first()
+        if event is None or not is_bookable(event):
+            return Response({'code': 'This event is not open for booking.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            phone = normalize_phone(v['phone']) if v['phone'] else None
+        except DjangoValidationError:
+            phone = None
+        before = event.price * v['participant_count']
+        try:
+            coupon = find_coupon(v['code'])
+            check_event_coupon(coupon, event, phone)
+        except CouponError as exc:
+            return Response({'code': exc.message}, status=status.HTTP_400_BAD_REQUEST)
+        discount = event_discount(coupon, before)
+        return Response({'code': coupon.code, 'discount': discount, 'total_before': before, 'total_after': before - discount})
 
 
 class EventBookingStatusView(APIView):

@@ -279,6 +279,8 @@ class Event(UUIDModel, Timestamped, Publishable):
     venue_address = models.TextField(blank=True)
     cover = models.ForeignKey(MediaAsset, null=True, blank=True, on_delete=models.SET_NULL, related_name='+')
     price = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    is_free = models.BooleanField(
+        default=False, help_text='Tick for a free event. Otherwise the website only takes bookings once a price is set.')
     is_featured = models.BooleanField(default=False, db_index=True)
     booking_whatsapp_number = models.CharField(max_length=20, blank=True)
     show_in_popup = models.BooleanField(
@@ -567,6 +569,12 @@ class EventRegistration(UUIDModel, Timestamped):
     payment_utr = models.CharField('UPI transaction ID', max_length=40, blank=True,
                                    help_text='UTR / transaction ID the customer typed (optional).')
     payment_submitted_at = models.DateTimeField(null=True, blank=True, editable=False)
+    coupon = models.ForeignKey('crm.Coupon', null=True, blank=True, on_delete=models.PROTECT, related_name='event_registrations')
+    discount_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0, editable=False,
+                                          help_text='Taken off by the coupon when the booking was made.')
+
+    # Status the row had when it was loaded, so save() can tell the customer when staff confirm or cancel it.
+    _saved_status = None
 
     class Meta:
         db_table = 'event_registrations'
@@ -574,6 +582,12 @@ class EventRegistration(UUIDModel, Timestamped):
 
     def __str__(self):
         return f'{self.reference} · {self.contact_name or "booking"} × {self.participant_count}'
+
+    @classmethod
+    def from_db(cls, db, field_names, values):
+        instance = super().from_db(db, field_names, values)
+        instance._saved_status = instance.__dict__.get('status')
+        return instance
 
     @classmethod
     def holding(cls, now=None):
@@ -631,7 +645,7 @@ class EventRegistration(UUIDModel, Timestamped):
                 pass
         if self.unit_price is None and self.schedule_id:
             self.unit_price = self.schedule.event.price
-        self.total_amount = (self.unit_price or 0) * self.participant_count
+        self.total_amount = max(0, (self.unit_price or 0) * self.participant_count - (self.discount_amount or 0))
         if self.status == self.Status.PENDING and self.reserved_until is None and self.schedule_id:
             from datetime import timedelta
             # Hold for the configured time, but never past the event start.
@@ -641,7 +655,18 @@ class EventRegistration(UUIDModel, Timestamped):
             self.confirmed_at = now
         if self.status == self.Status.CANCELLED and not self.cancelled_at:
             self.cancelled_at = now
-        return super().save(*args, **kwargs)
+        result = super().save(*args, **kwargs)
+        self._announce_status_change()
+        return result
+
+    def _announce_status_change(self):
+        """Queue a customer message when the booking becomes confirmed or cancelled (sent by notifications.tasks)."""
+        previous, self._saved_status = self._saved_status, self.status
+        if self.status == previous or not self.contact_phone:
+            return
+        if self.status == self.Status.CONFIRMED or (self.status == self.Status.CANCELLED and previous is not None):
+            from core.services import emit
+            emit(f'event_booking.{self.status.lower()}', self.pk, {'reference': self.reference})
 
 
 class EventParticipant(UUIDModel):

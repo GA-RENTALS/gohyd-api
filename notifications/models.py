@@ -20,6 +20,8 @@ class NotificationEvent(models.TextChoices):
     MEMBERSHIP = 'membership'
     ENQUIRY_RESPONSE = 'enquiry_response'
     EVENT_PAYMENT_PROOF = 'event_payment_proof'
+    EVENT_CONFIRMED = 'event_confirmed'
+    EVENT_CANCELLED = 'event_cancelled'
 
 
 class Channel(models.TextChoices):

@@ -18,7 +18,7 @@ from payments.models import Payment, PaymentAllocation, PaymentKind, Refund
 from payments.services import amounts_due
 from trips.models import Event, EventRegistration, EventSchedule, Trip, TripSchedule
 
-from .permissions import StaffOnly
+from .permissions import StaffOnly, staff_has_perm
 from .views import _access_log, _require_model_permission, _resolve
 
 ZERO = Decimal('0.00')
@@ -149,7 +149,7 @@ class TripOverviewView(APIView):
             'permissions': {'bookings': can_bookings, 'payments': can_payments, 'participants': _can(request, 'participants'),
                             'cancel': request.user.has_perm('bookings.change_booking'),
                             'record_payment': request.user.has_perm('payments.add_payment'),
-                            'verify_payment': _can(request, 'payments', 'change'),
+                            'verify_payment': staff_has_perm(request, 'payments.change_payment'),
                             'check_in': _can(request, 'participants', 'change'),
                             'edit': _can(request, 'trips', 'change'),
                             'delete': _can(request, 'trips', 'delete')},

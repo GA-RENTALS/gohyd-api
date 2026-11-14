@@ -78,3 +78,65 @@ class CorporateEnquiryView(APIView):
         s.is_valid(raise_exception=True)
         s.save()
         return Response({'status': 'received'}, status=201)
+
+
+# ---------- newsletter ----------
+
+class NewsletterSubscribeSerializer(serializers.Serializer):
+    email = serializers.EmailField(max_length=254)
+    consent = serializers.BooleanField()
+
+    def validate_consent(self, value):
+        if not value:
+            raise serializers.ValidationError('Please agree to receive our emails.')
+        return value
+
+
+class NewsletterSubscribeView(APIView):
+    """Footer sign-up. Signing up again with an address that had unsubscribed subscribes it again."""
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+    throttle_classes = [TrustedScopedRateThrottle]
+    throttle_scope = 'enquiry'
+
+    @extend_schema(tags=['CRM'], request=NewsletterSubscribeSerializer)
+    def post(self, request):
+        data = NewsletterSubscribeSerializer(data=request.data)
+        data.is_valid(raise_exception=True)
+        email = data.validated_data['email'].strip().lower()
+        subscription = m.NewsletterSubscription.objects.filter(email__iexact=email).first()
+        if subscription is None:
+            m.NewsletterSubscription.objects.create(email=email, consent_at=timezone.now())
+        elif subscription.unsubscribed_at:
+            subscription.unsubscribed_at, subscription.consent_at = None, timezone.now()
+            subscription.save(update_fields=['unsubscribed_at', 'consent_at', 'updated_at'])
+        # Same answer whether or not the address was already on the list, so the form can't be used to look people up.
+        return Response({'status': 'subscribed'}, status=201)
+
+
+# ---------- membership plans ----------
+
+class MembershipPlanSerializer(serializers.ModelSerializer):
+    discount_percent = serializers.SerializerMethodField()
+    benefits = serializers.SerializerMethodField()
+
+    class Meta:
+        model = m.MembershipPlan
+        fields = ('id', 'name', 'price', 'duration_days', 'discount_percent', 'benefits')
+
+    def get_discount_percent(self, plan):
+        return plan.discount_basis_points / 100
+
+    def get_benefits(self, plan):
+        return [b.text for b in plan.benefits.all()]
+
+
+class MembershipPlanListView(APIView):
+    """Active membership plans for the /membership page, cheapest first."""
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    @extend_schema(tags=['CRM'], responses=MembershipPlanSerializer(many=True))
+    def get(self, request):
+        plans = m.MembershipPlan.objects.filter(is_active=True).prefetch_related('benefits').order_by('price', 'name')
+        return Response(MembershipPlanSerializer(plans, many=True).data)

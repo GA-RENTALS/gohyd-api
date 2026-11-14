@@ -74,6 +74,22 @@ class Publishable(models.Model):
     def translation_rows(self):
         raise NotImplementedError
 
+    def clean(self):
+        super().clean()
+        self._keep_published_slug()
+
+    def _keep_published_slug(self):
+        """Once something has been published its address is shared, bookmarked and indexed, so the slug is fixed.
+
+        (The website also matches a few built-in fallbacks, such as the plan photos, by slug.)
+        """
+        if not self.pk or not hasattr(self, 'slug'):
+            return
+        saved = type(self)._default_manager.filter(pk=self.pk).values('slug', 'published_at').first()
+        if saved and saved['published_at'] and saved['slug'] != self.slug:
+            raise ValidationError({'slug': 'This has been published, so its web address (slug) can’t change. '
+                                           'Unpublish it and create a new one if the address must change.'})
+
     def missing_approvals(self):
         """Only an English title is required to publish. Telugu and Hindi are optional: missing ones show the English text."""
         has_english = self.translation_rows().filter(language='en').exclude(status=ContentStatus.REJECTED).exclude(title='').exists()

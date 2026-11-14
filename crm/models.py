@@ -1,5 +1,6 @@
 """CRM, support, corporate, marketing, memberships, loyalty (sections 13.7, 13.11, 13.12)."""
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 
@@ -204,11 +205,35 @@ class Coupon(UUIDModel, Timestamped):
     per_user_limit = models.PositiveSmallIntegerField(default=1)
     valid_from = models.DateTimeField(null=True, blank=True)
     valid_until = models.DateTimeField(null=True, blank=True)
-    trips = models.ManyToManyField('trips.Trip', blank=True, related_name='coupons')
+    trips = models.ManyToManyField('trips.Trip', blank=True, related_name='coupons',
+                                   help_text='Leave trips and events empty for a coupon that works on everything.')
+    events = models.ManyToManyField('trips.Event', blank=True, related_name='coupons')
     is_active = models.BooleanField(default=True)
 
     class Meta:
         db_table = 'coupons'
+
+    def __str__(self):
+        return self.code
+
+    def clean(self):
+        super().clean()
+        self.code = (self.code or '').strip().upper()
+        errors = {}
+        if not self.code or any(ch.isspace() for ch in self.code):
+            errors['code'] = 'Use letters and numbers without spaces, e.g. MONSOON10.'
+        elif Coupon.objects.filter(code__iexact=self.code).exclude(pk=self.pk).exists():
+            errors['code'] = 'Another coupon already uses this code.'
+        if bool(self.percent_basis_points) == bool(self.fixed_amount):
+            errors['percent_basis_points'] = 'Set either a percentage or a fixed amount off, not both.'
+        if self.valid_from and self.valid_until and self.valid_until <= self.valid_from:
+            errors['valid_until'] = 'The end date must be after the start date.'
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.code = (self.code or '').strip().upper()   # checkout looks codes up case-insensitively; store one spelling
+        super().save(*args, **kwargs)
 
 
 class CouponRedemption(UUIDModel):

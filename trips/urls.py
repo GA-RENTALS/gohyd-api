@@ -10,6 +10,7 @@ router.register('categories', views.TripCategoryViewSet, basename='category')
 urlpatterns = [
     path('me/event-bookings/', views.MyEventBookingsView.as_view(), name='my-event-bookings'),
     path('event-bookings/', views.EventBookingCreateView.as_view(), name='event-booking-create'),
+    path('event-bookings/coupon-preview/', views.EventCouponPreviewView.as_view(), name='event-booking-coupon-preview'),
     path('event-bookings/<str:reference>/', views.EventBookingStatusView.as_view(), name='event-booking-status'),
     path('event-bookings/<str:reference>/payment-proof/', views.EventPaymentProofView.as_view(), name='event-booking-payment-proof'),
 ] + router.urls

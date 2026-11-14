@@ -20,13 +20,22 @@ def expire_stale_holds(now=None):
             .update(status=EventRegistration.Status.EXPIRED, updated_at=now))
 
 
-def create_event_booking(*, event_slug, schedule_id, name, phone, participant_count, note='', source='website', email=''):
+def is_bookable(event):
+    """Online booking needs a price, unless the event is marked free (price ₹0 means "not announced yet")."""
+    return event.is_free or event.price > 0
+
+
+def create_event_booking(*, event_slug, schedule_id, name, phone, participant_count, note='', source='website', email='',
+                         coupon_code=''):
     """Hold `participant_count` places on a published event date. Raises ValidationError with a field dict."""
+    from bookings.coupons import CouponError, check_event_coupon, event_discount, find_coupon
     from crm.models import Enquiry, EnquirySource
 
     event = Event.objects.filter(slug=event_slug, status=ContentStatus.PUBLISHED).first()
     if event is None:
         raise ValidationError({'event': 'This event is not open for booking.'})
+    if not is_bookable(event):
+        raise ValidationError({'event': 'Bookings open once the price is announced. Message us on WhatsApp to register your interest.'})
 
     with transaction.atomic():
         try:
@@ -41,6 +50,14 @@ def create_event_booking(*, event_slug, schedule_id, name, phone, participant_co
             participant_count=participant_count,
             unit_price=event.price, customer_note=note, source=source, status=EventRegistration.Status.PENDING,
         )
+        if coupon_code:
+            try:
+                coupon = find_coupon(coupon_code, lock=True)   # row lock: two bookings can't both take the last use
+                check_event_coupon(coupon, event, phone)
+            except CouponError as exc:
+                raise ValidationError({'coupon': exc.message})
+            booking.coupon = coupon
+            booking.discount_amount = event_discount(coupon, event.price * participant_count)
         booking.full_clean(exclude=['reference', 'registrant'])   # registration type, per-booking cap, remaining capacity
         for _ in range(5):   # astronomically unlikely, but never surface a reference collision to the visitor
             if not EventRegistration.objects.filter(reference=booking.reference).exists():
@@ -54,7 +71,8 @@ def create_event_booking(*, event_slug, schedule_id, name, phone, participant_co
             name=name, phone=phone, email=email, event=event, event_schedule=schedule, group_size=min(participant_count, 30),
             source=source_row, consent_to_contact=True,
             message='\n'.join(filter(None, [
-                f'Event booking {booking.reference}: {participant_count} participant(s), total ₹{booking.total_amount}',
+                f'Event booking {booking.reference}: {participant_count} participant(s), total ₹{booking.total_amount}'
+                + (f' after coupon {booking.coupon.code} (−₹{booking.discount_amount})' if booking.coupon else ''),
                 f'Status: pending confirmation (slots held until {timezone.localtime(booking.reserved_until):%d %b %Y %I:%M %p})',
                 f'Customer note: {note}' if note else '',
             ])),

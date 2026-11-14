@@ -138,6 +138,7 @@ class EventBookingCreateSerializer(serializers.Serializer):
     email = serializers.EmailField(required=False, allow_blank=True, default='')
     participant_count = serializers.IntegerField(min_value=1, max_value=500)
     note = serializers.CharField(max_length=1000, required=False, allow_blank=True, default='')
+    coupon = serializers.CharField(max_length=30, required=False, allow_blank=True, default='')
     consent_to_contact = serializers.BooleanField()
 
     def validate_phone(self, value):
@@ -187,6 +188,13 @@ def event_payment_info(event, request=None):
     return {'qr_url': url, 'upi_id': event.payment_upi_id, 'payee_name': event.payment_payee_name}
 
 
+class EventCouponPreviewSerializer(serializers.Serializer):
+    event = serializers.SlugField()
+    participant_count = serializers.IntegerField(min_value=1, max_value=500)
+    code = serializers.CharField(max_length=30)
+    phone = serializers.CharField(max_length=20, required=False, allow_blank=True, default='')
+
+
 class EventBookingSerializer(serializers.ModelSerializer):
     """What the visitor sees about their own booking. Pending holds are never reported as confirmed."""
     status = serializers.SerializerMethodField()
@@ -201,11 +209,12 @@ class EventBookingSerializer(serializers.ModelSerializer):
     seats_left = serializers.SerializerMethodField()
     payment = serializers.SerializerMethodField()
     payment_submitted = serializers.SerializerMethodField()
+    coupon_code = serializers.SlugRelatedField(source='coupon', slug_field='code', read_only=True)
 
     class Meta:
         model = m.EventRegistration
         fields = ('reference', 'status', 'status_label', 'contact_name', 'participant_count', 'unit_price',
-                  'total_amount', 'reserved_until', 'confirmed_at', 'created_at', 'event_slug', 'event_title',
+                  'discount_amount', 'coupon_code', 'total_amount', 'reserved_until', 'confirmed_at', 'created_at', 'event_slug', 'event_title',
                   'starts_at', 'ends_at', 'time_tbd', 'venue', 'booking_whatsapp_number', 'seats_left',
                   'payment', 'payment_submitted', 'payment_submitted_at')
 
@@ -273,7 +282,7 @@ class EventListSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = m.Event
-        fields = ('id', 'slug', 'title', 'summary', 'category', 'category_slug', 'price', 'cover_url', 'next_date',
+        fields = ('id', 'slug', 'title', 'summary', 'category', 'category_slug', 'price', 'is_free', 'cover_url', 'next_date',
                   'next_time_tbd', 'is_featured', 'booking_whatsapp_number', 'show_in_popup', 'popup_order',
                   'popup_banner_url', 'next_seats_left', 'registration_type', 'max_participants_per_booking')
 

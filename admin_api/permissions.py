@@ -1,6 +1,21 @@
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import BasePermission
 
 from tenancy.models import TenantMembership
+
+
+def staff_has_perm(request, perm):
+    """True when the signed-in staff member of this operator holds the Django permission `perm` (e.g. 'payments.change_payment').
+
+    Use this for workflow actions (verify a payment, approve a refund, block a customer). Those are allowed even on
+    records the generic admin keeps read-only, so they must not go through the resource's write mode.
+    """
+    return has_staff_membership(request) and request.user.has_perm(perm)
+
+
+def require_staff_perm(request, perm, message='You do not have permission to do this.'):
+    if not staff_has_perm(request, perm):
+        raise PermissionDenied(message)
 
 
 def has_staff_membership(request):

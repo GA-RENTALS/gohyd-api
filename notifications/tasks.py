@@ -65,32 +65,55 @@ def _event_payment_ctx(r):
             'participants': str(r.participant_count), 'amount': str(r.total_amount), 'reference': r.reference}
 
 
+# Messages to the customer when staff change their event booking (sent to the phone they booked with).
+CUSTOMER_EVENT_MESSAGES = {
+    'event_booking.confirmed': NotificationEvent.EVENT_CONFIRMED,
+    'event_booking.cancelled': NotificationEvent.EVENT_CANCELLED,
+}
+
+
 @shared_task(name='notifications.tasks.handle_event_booking_event')
 def handle_event_booking_event(event_id, event_type, aggregate_id, payload, tenant_id):
-    """event_booking.payment_submitted -> tell the organiser's WhatsApp number who paid."""
-    if event_type != 'event_booking.payment_submitted':
+    """event_booking.payment_submitted -> alert the organiser; .confirmed / .cancelled -> tell the customer."""
+    if event_type != 'event_booking.payment_submitted' and event_type not in CUSTOMER_EVENT_MESSAGES:
         return
     with tenant_scope(tenant_id):
         from trips.models import EventRegistration
-        r = (EventRegistration.objects.select_related('schedule__event').prefetch_related('schedule__event__translations')
+        r = (EventRegistration.objects.select_related('schedule__event', 'registrant').prefetch_related('schedule__event__translations')
              .filter(pk=aggregate_id).first())
         if not r:
             return
-        ev = r.schedule.event
-        number = (ev.payment_alert_number or ev.booking_whatsapp_number or '').strip()
-        if number:
-            from accounts.models import normalize_phone
-            try:
-                number = normalize_phone(number)     # staff may type '+91 90593 38727'
-            except Exception:  # noqa: BLE001
-                logger.warning('Event %s payment alert number %r is not a valid phone number.', ev.slug, number)
-                return
-        if not number:
-            logger.warning('Event %s has no payment alert or booking WhatsApp number; screenshot alert not sent.', ev.slug)
+        if event_type in CUSTOMER_EVENT_MESSAGES:
+            _tell_customer(r, CUSTOMER_EVENT_MESSAGES[event_type], event_id, tenant_id)
+        else:
+            _alert_organiser(r, event_id, tenant_id)
+
+
+def _tell_customer(r, message, event_id, tenant_id):
+    if not r.contact_phone:
+        return
+    language = r.registrant.preferred_language if r.registrant_id else 'en'
+    job = services.enqueue_to_number(r.contact_phone, message, _event_payment_ctx(r), f'{message}:{event_id}', language=language)
+    if job:
+        deliver.delay(str(job.pk), str(tenant_id))
+
+
+def _alert_organiser(r, event_id, tenant_id):
+    ev = r.schedule.event
+    number = (ev.payment_alert_number or ev.booking_whatsapp_number or '').strip()
+    if number:
+        from accounts.models import normalize_phone
+        try:
+            number = normalize_phone(number)     # staff may type '+91 90593 38727'
+        except Exception:  # noqa: BLE001
+            logger.warning('Event %s payment alert number %r is not a valid phone number.', ev.slug, number)
             return
-        job = services.enqueue_to_number(number, NotificationEvent.EVENT_PAYMENT_PROOF, _event_payment_ctx(r), f'event-pay:{event_id}')
-        if job:
-            deliver.delay(str(job.pk), str(tenant_id))
+    if not number:
+        logger.warning('Event %s has no payment alert or booking WhatsApp number; screenshot alert not sent.', ev.slug)
+        return
+    job = services.enqueue_to_number(number, NotificationEvent.EVENT_PAYMENT_PROOF, _event_payment_ctx(r), f'event-pay:{event_id}')
+    if job:
+        deliver.delay(str(job.pk), str(tenant_id))
 
 
 @shared_task(bind=True, max_retries=5, retry_backoff=True, name='notifications.tasks.deliver')

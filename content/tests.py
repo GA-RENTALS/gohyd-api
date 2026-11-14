@@ -108,15 +108,17 @@ class UploadDestinationPhotosTests(TenantTestCase):
         tmp = tempfile.mkdtemp()
         storage = {'default': {'BACKEND': 'django.core.files.storage.FileSystemStorage', 'OPTIONS': {'location': tmp}},
                    'staticfiles': {'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage'}}
-        d = Destination.objects.create(slug='golconda-fort')
-        DestinationTranslation.objects.create(destination=d, language='en', title='Golconda Fort')
+        # migration 0003 already seeds this destination, so reuse it rather than creating a duplicate slug
+        d, _ = Destination.objects.get_or_create(slug='golconda-fort')
+        DestinationTranslation.objects.update_or_create(destination=d, language='en', defaults={'title': 'Golconda Fort'})
         with override_settings(MEDIA_ROOT=tmp, STORAGES=storage, AWS_STORAGE_BUCKET_NAME=''):
             call_command('upload_destination_photos', '--allow-local', stdout=StringIO())
             call_command('upload_destination_photos', '--allow-local', stdout=StringIO())   # second run changes nothing
         d.refresh_from_db()
         self.assertEqual(d.cover.alt_text, 'Stone walls of Golconda Fort')
         self.assertEqual(DestinationMedia.objects.filter(destination=d).count(), 2)        # cover + gallery photo
-        self.assertEqual(MediaAsset.objects.filter(folder__name='Destination photos').count(), 2)
+        used = DestinationMedia.objects.filter(destination=d).values('asset')
+        self.assertEqual(MediaAsset.objects.filter(pk__in=used, folder__name='Destination photos').count(), 2)   # no duplicates
         self.assertIn('Bernard Gagnon', d.cover.credit)                                   # photo credit kept with the image
 
     def test_command_refuses_without_s3_unless_allowed(self):
