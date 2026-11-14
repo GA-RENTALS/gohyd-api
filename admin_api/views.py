@@ -377,6 +377,8 @@ class StaffActionView(APIView):
                 return self._cancel_booking(request)
             if action == 'event-check-in':
                 return self._event_check_in(request)
+            if action == 'record-event-refund':
+                return self._record_event_refund(request)
         except (BookingError, DjangoValidationError) as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except IntegrityError as exc:
@@ -400,6 +402,22 @@ class StaffActionView(APIView):
         before = _serialize(resource, refund, request)
         payment_services.approve_refund(request.user, refund, request)
         _audit(request, 'refunds.approve', resource, refund, before=before, after=_serialize(resource, refund, request))
+        return Response(_serialize(resource, refund, request))
+
+    def _record_event_refund(self, request):
+        """Staff paid an event refund back by UPI (or decided not to): record it. SENT tells the customer on WhatsApp."""
+        from payments.models import EventRefund
+        resource = _resolve('event-refunds')
+        require_staff_perm(request, 'payments.change_eventrefund', 'You do not have permission to record refunds.')
+        outcome = request.data.get('outcome')
+        if outcome not in ('sent', 'not_refunded'):
+            raise serializers.ValidationError({'outcome': 'Use "sent" or "not_refunded".'})
+        refund = EventRefund.objects.get(pk=request.data.get('refund_id'))
+        before = _serialize(resource, refund, request)
+        refund = payment_services.record_event_refund(
+            request.user, refund, sent=outcome == 'sent', amount=request.data.get('amount'),
+            upi_reference=str(request.data.get('upi_reference', '')), note=str(request.data.get('note', '')), request=request)
+        _audit(request, 'event-refunds.record', resource, refund, before=before, after=_serialize(resource, refund, request))
         return Response(_serialize(resource, refund, request))
 
     def _record_manual_payment(self, request):

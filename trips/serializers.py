@@ -1,3 +1,4 @@
+from django.core.exceptions import ObjectDoesNotExist
 from rest_framework import serializers
 
 from content.serializers import pick
@@ -195,6 +196,20 @@ class EventCouponPreviewSerializer(serializers.Serializer):
     phone = serializers.CharField(max_length=20, required=False, allow_blank=True, default='')
 
 
+class EventBookingCancelSerializer(serializers.Serializer):
+    reason = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
+
+
+def event_refund_info(registration):
+    """The refund on a cancelled booking, or None."""
+    try:
+        r = registration.refund
+    except ObjectDoesNotExist:
+        return None
+    return {'status': r.status, 'status_label': r.get_status_display(), 'amount': str(r.amount),
+            'upi_reference': r.upi_reference if r.status == r.Status.SENT else '', 'recorded_at': r.recorded_at}
+
+
 class EventBookingSerializer(serializers.ModelSerializer):
     """What the visitor sees about their own booking. Pending holds are never reported as confirmed."""
     status = serializers.SerializerMethodField()
@@ -210,14 +225,26 @@ class EventBookingSerializer(serializers.ModelSerializer):
     payment = serializers.SerializerMethodField()
     payment_submitted = serializers.SerializerMethodField()
     coupon_code = serializers.SlugRelatedField(source='coupon', slug_field='code', read_only=True)
+    cancellation = serializers.SerializerMethodField()
+    refund = serializers.SerializerMethodField()
 
     class Meta:
         model = m.EventRegistration
         fields = ('reference', 'status', 'status_label', 'contact_name', 'participant_count', 'unit_price',
                   'discount_amount', 'coupon_code', 'total_amount', 'reserved_until', 'confirmed_at', 'created_at', 'event_slug', 'event_title',
                   'starts_at', 'ends_at', 'time_tbd', 'venue', 'booking_whatsapp_number', 'seats_left',
-                  'payment', 'payment_submitted', 'payment_submitted_at')
+                  'payment', 'payment_submitted', 'payment_submitted_at', 'cancelled_at', 'cancelled_by_customer',
+                  'cancellation', 'refund')
 
+    def get_cancellation(self, o):
+        """Whether the customer may cancel now, until when, and what they would get back."""
+        if o.effective_status not in (o.Status.PENDING, o.Status.CONFIRMED):
+            return None
+        bp, amount = o.refund_quote()
+        return {'allowed': o.can_customer_cancel(), 'until': o.cancel_deadline(), 'refund_percent': bp / 100,
+                'refund_amount': str(amount), 'paid': o.counts_as_paid}
+
+    def get_refund(self, o): return event_refund_info(o)
     def get_payment(self, o): return event_payment_info(o.schedule.event, self.context.get('request'))
     def get_payment_submitted(self, o): return bool(o.payment_screenshot)
 
@@ -354,6 +381,8 @@ class EventDetailSerializer(EventListSerializer):
     payment = serializers.SerializerMethodField()
     cover_alt = serializers.SerializerMethodField()
     cover_credit = serializers.SerializerMethodField()
+    cancellation_cutoff_hours = serializers.IntegerField(read_only=True)
+    refund_policy = serializers.SerializerMethodField()
 
     class Meta(EventListSerializer.Meta):
         fields = EventListSerializer.Meta.fields + ('body', 'venue_name', 'venue_address', 'schedules', 'itineraries',
@@ -361,7 +390,11 @@ class EventDetailSerializer(EventListSerializer):
                                                     'rules', 'reservation_hold_hours', 'highlights', 'faqs',
                                                     'headline', 'image_caption', 'format_note', 'schedule_note',
                                                     'seo_title', 'seo_description', 'payment', 'cover_alt',
-                                                    'cover_credit')
+                                                    'cover_credit', 'cancellation_cutoff_hours', 'refund_policy')
+
+    def get_refund_policy(self, o):
+        return [{'hours_before': p.hours_before, 'refund_percent': p.refund_basis_points / 100, 'note': p.note}
+                for p in o.refund_policies.all()]
 
     def get_cover_alt(self, o): return o.cover.alt_text if o.cover_id else ''
     def get_cover_credit(self, o): return o.cover.credit if o.cover_id else ''

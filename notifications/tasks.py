@@ -69,17 +69,18 @@ def _event_payment_ctx(r):
 CUSTOMER_EVENT_MESSAGES = {
     'event_booking.confirmed': NotificationEvent.EVENT_CONFIRMED,
     'event_booking.cancelled': NotificationEvent.EVENT_CANCELLED,
+    'event_booking.refund_sent': NotificationEvent.EVENT_REFUND_SENT,
 }
 
 
 @shared_task(name='notifications.tasks.handle_event_booking_event')
 def handle_event_booking_event(event_id, event_type, aggregate_id, payload, tenant_id):
-    """event_booking.payment_submitted -> alert the organiser; .confirmed / .cancelled -> tell the customer."""
+    """event_booking.payment_submitted -> alert the organiser; .confirmed / .cancelled / .refund_sent -> tell the customer."""
     if event_type != 'event_booking.payment_submitted' and event_type not in CUSTOMER_EVENT_MESSAGES:
         return
     with tenant_scope(tenant_id):
         from trips.models import EventRegistration
-        r = (EventRegistration.objects.select_related('schedule__event', 'registrant').prefetch_related('schedule__event__translations')
+        r = (EventRegistration.objects.select_related('schedule__event', 'registrant', 'refund').prefetch_related('schedule__event__translations')
              .filter(pk=aggregate_id).first())
         if not r:
             return
@@ -93,7 +94,11 @@ def _tell_customer(r, message, event_id, tenant_id):
     if not r.contact_phone:
         return
     language = r.registrant.preferred_language if r.registrant_id else 'en'
-    job = services.enqueue_to_number(r.contact_phone, message, _event_payment_ctx(r), f'{message}:{event_id}', language=language)
+    ctx = _event_payment_ctx(r)
+    if message == NotificationEvent.EVENT_REFUND_SENT:
+        refund = r.refund
+        ctx.update(amount=str(refund.amount), upi_reference=refund.upi_reference or '-')
+    job = services.enqueue_to_number(r.contact_phone, message, ctx, f'{message}:{event_id}', language=language)
     if job:
         deliver.delay(str(job.pk), str(tenant_id))
 

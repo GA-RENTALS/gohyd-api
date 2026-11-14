@@ -1,6 +1,6 @@
 """Payment orchestration. The browser is never trusted for payment status: success comes from a verified signature or webhook."""
 import logging
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from django.db import IntegrityError, transaction
 from django.utils import timezone
@@ -243,3 +243,34 @@ def process_refund(refund_id):
         logger.warning('refund %s failed: %s', r.pk, exc)
         raise
     return r
+
+
+# ---------- event refunds (paid back by hand over UPI; staff record the outcome) ----------
+@transaction.atomic
+def record_event_refund(actor, refund, *, sent, amount=None, upi_reference='', note='', request=None):
+    """Close a due event refund as SENT (the customer is told on WhatsApp) or NOT_REFUNDED (e.g. the payment never arrived)."""
+    from .models import EventRefund
+    refund = EventRefund.objects.select_for_update().select_related('registration').get(pk=refund.pk)
+    if refund.status != EventRefund.Status.DUE:
+        raise BookingError('This refund has already been recorded.', 'not_due')
+    upi_reference, note = (upi_reference or '').strip()[:40], (note or '').strip()[:255]
+    if sent:
+        try:
+            amount = refund.amount if amount in (None, '') else Decimal(str(amount))
+        except InvalidOperation:
+            raise BookingError('Enter the amount you sent.', 'bad_amount')
+        if not amount.is_finite() or not 0 < amount <= refund.registration.total_amount:
+            raise BookingError(f'Enter an amount between ₹1 and the ₹{refund.registration.total_amount} paid.', 'bad_amount')
+        refund.status, refund.amount = EventRefund.Status.SENT, amount
+    else:
+        if not note:
+            raise BookingError('Say why no refund is being sent.', 'reason_required')
+        refund.status = EventRefund.Status.NOT_REFUNDED
+    refund.upi_reference, refund.note = upi_reference, note
+    refund.recorded_by, refund.recorded_at = actor, timezone.now()
+    refund.save()
+    audit(actor, 'event_refund.recorded', refund, refund.pk,
+          after={'status': refund.status, 'amount': str(refund.amount), 'upi_reference': upi_reference}, request=request)
+    if sent:
+        emit('event_booking.refund_sent', refund.registration_id, {'reference': refund.registration.reference})
+    return refund

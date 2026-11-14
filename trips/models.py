@@ -298,6 +298,10 @@ class Event(UUIDModel, Timestamped, Publishable):
     reservation_hold_hours = models.PositiveSmallIntegerField(
         default=24, validators=[MinValueValidator(1), MaxValueValidator(720)],
         help_text='How long an unconfirmed (pending) website booking holds its slots before they are released.')
+    cancellation_cutoff_hours = models.PositiveSmallIntegerField(
+        default=24, db_default=24, validators=[MaxValueValidator(720)],
+        help_text='Customers can cancel online until this many hours before the event starts (0 = until it starts). '
+                  'The refund follows the refund policy.')
     # UPI payment by QR: shown only when a QR image is set. The customer pays, then uploads a screenshot.
     payment_qr = models.ForeignKey(
         MediaAsset, null=True, blank=True, on_delete=models.SET_NULL, related_name='+',
@@ -317,6 +321,36 @@ class Event(UUIDModel, Timestamped, Publishable):
 
     def __str__(self):
         return self.slug
+
+    def refund_tiers(self):
+        """The refund policy as plain data, most generous tier first. Saved onto each booking when it is made."""
+        return [{'hours_before': p.hours_before, 'refund_basis_points': p.refund_basis_points}
+                for p in self.refund_policies.all()]
+
+
+class EventRefundPolicy(Timestamped):
+    """One refund tier: `refund_basis_points` back when the customer cancels at least `hours_before` hours before the start."""
+    event = models.ForeignKey(Event, on_delete=models.CASCADE, related_name='refund_policies')
+    hours_before = models.PositiveIntegerField(help_text='Applies when the customer cancels at least this many hours before the event starts.')
+    refund_basis_points = models.PositiveSmallIntegerField(
+        validators=[MaxValueValidator(10000)], help_text='Refund in basis points: 10000 = 100%, 5000 = 50%.')
+    note = models.CharField(max_length=255, blank=True)
+
+    class Meta:
+        db_table = 'event_refund_policies'
+        ordering = ['-hours_before']
+        constraints = [models.UniqueConstraint(fields=['event', 'hours_before'], name='uniq_event_refund_tier')]
+
+    def __str__(self):
+        return f'{self.hours_before}h+ before: {self.refund_basis_points / 100:g}% refund'
+
+
+def refund_basis_points_for(tiers, hours_left):
+    """The refund share for cancelling `hours_left` hours before the start. No matching tier (or no policy) = no refund."""
+    for tier in sorted(tiers or [], key=lambda t: -t['hours_before']):
+        if hours_left >= tier['hours_before']:
+            return int(tier['refund_basis_points'])
+    return 0
 
 
 class EventTranslation(TranslationBase):
@@ -572,9 +606,16 @@ class EventRegistration(UUIDModel, Timestamped):
     coupon = models.ForeignKey('crm.Coupon', null=True, blank=True, on_delete=models.PROTECT, related_name='event_registrations')
     discount_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0, editable=False,
                                           help_text='Taken off by the coupon when the booking was made.')
+    refund_policy_snapshot = models.JSONField(
+        null=True, blank=True, editable=False,
+        help_text="The event's refund tiers when this was booked. Empty for older bookings, which use the current policy.")
+    cancel_reason = models.CharField(max_length=255, blank=True, db_default='')
+    cancelled_by_customer = models.BooleanField(default=False, db_default=False, editable=False)
 
     # Status the row had when it was loaded, so save() can tell the customer when staff confirm or cancel it.
     _saved_status = None
+    # Refund share for this cancellation. Set by the customer-cancel service; a staff cancellation refunds in full.
+    _refund_basis_points = None
 
     class Meta:
         db_table = 'event_registrations'
@@ -611,6 +652,35 @@ class EventRegistration(UUIDModel, Timestamped):
         if self.status == self.Status.PENDING and self.reserved_until and self.reserved_until <= timezone.now():
             return self.Status.EXPIRED
         return self.status
+
+    # ---- cancellation & refund ----
+
+    def refund_tiers(self):
+        return self.refund_policy_snapshot if self.refund_policy_snapshot is not None else self.schedule.event.refund_tiers()
+
+    def cancel_deadline(self):
+        """Last moment the customer may cancel online."""
+        from datetime import timedelta
+        return self.schedule.starts_at - timedelta(hours=self.schedule.event.cancellation_cutoff_hours)
+
+    def can_customer_cancel(self, now=None):
+        now = now or timezone.now()
+        return (self.effective_status in (self.Status.PENDING, self.Status.CONFIRMED)
+                and not self.schedule.has_started(now) and now < self.cancel_deadline())
+
+    @property
+    def counts_as_paid(self):
+        """Staff confirmed it (so checked the payment), or the customer sent a payment screenshot. Free bookings never are."""
+        return self.total_amount > 0 and (self._saved_status == self.Status.CONFIRMED or bool(self.payment_submitted_at))
+
+    def refund_quote(self, now=None):
+        """(basis points, amount) the customer would get back by cancelling now. Nothing is due on an unpaid booking."""
+        from core.money import percent_of
+        if not self.counts_as_paid:
+            return 0, percent_of(0, 0)
+        hours_left = (self.schedule.starts_at - (now or timezone.now())).total_seconds() / 3600
+        bp = refund_basis_points_for(self.refund_tiers(), hours_left)
+        return bp, percent_of(self.total_amount, bp)
 
     def clean(self):
         super().clean()
@@ -655,9 +725,23 @@ class EventRegistration(UUIDModel, Timestamped):
             self.confirmed_at = now
         if self.status == self.Status.CANCELLED and not self.cancelled_at:
             self.cancelled_at = now
+        cancelling = self.status == self.Status.CANCELLED and self._saved_status not in (None, self.Status.CANCELLED)
+        refund_due = self._refund_due() if cancelling else None
         result = super().save(*args, **kwargs)
+        if refund_due:
+            from payments.models import EventRefund
+            EventRefund.objects.get_or_create(registration=self, defaults=refund_due)
         self._announce_status_change()
         return result
+
+    def _refund_due(self):
+        """What to refund when a paid booking is cancelled: the policy share for a customer, everything for staff."""
+        from core.money import percent_of
+        if not self.counts_as_paid:
+            return None
+        bp = 10000 if self._refund_basis_points is None else self._refund_basis_points
+        amount = percent_of(self.total_amount, bp)
+        return {'amount': amount, 'refund_basis_points': bp} if amount > 0 else None
 
     def _announce_status_change(self):
         """Queue a customer message when the booking becomes confirmed or cancelled (sent by notifications.tasks)."""

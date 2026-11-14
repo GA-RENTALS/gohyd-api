@@ -49,7 +49,7 @@ class EventViewSet(LangMixin, viewsets.ReadOnlyModelViewSet):
                 .select_related('cover', 'popup_banner', 'category', 'payment_qr')
                 .prefetch_related('translations', 'schedules', 'itineraries__items', 'things_to_bring',
                                   'inclusions', 'exclusions', 'format_details', 'rules', 'highlights',
-                                  'faqs').distinct())
+                                  'faqs', 'refund_policies').distinct())
 
     def get_serializer_class(self):
         return s.EventDetailSerializer if self.action == 'retrieve' else s.EventListSerializer
@@ -163,6 +163,12 @@ class EventPaymentProofView(APIView):
         return Response(s.EventBookingSerializer(booking, context={'request': request, 'lang': request.query_params.get('lang', 'en')}).data)
 
 
+def owned_by(user):
+    """Bookings linked to the account, or made with its (OTP-verified) phone number. Never matches on an empty phone."""
+    q = Q(registrant=user)
+    return q | Q(contact_phone=user.phone_number) if user.phone_number else q
+
+
 class MyEventBookingsView(APIView):
     """The signed-in customer's event bookings. Public event booking needs no login, so bookings made with the
     account's (OTP-verified) phone number count too, not only ones linked through `registrant`."""
@@ -171,7 +177,26 @@ class MyEventBookingsView(APIView):
     @extend_schema(tags=['Events'], responses=s.EventBookingSerializer(many=True))
     def get(self, request):
         user = request.user
-        bookings = (m.EventRegistration.objects.select_related('schedule__event')
-                    .filter(Q(registrant=user) | Q(contact_phone=user.phone_number))
-                    .order_by('-created_at'))
+        bookings = (m.EventRegistration.objects.select_related('schedule__event', 'refund')
+                    .filter(owned_by(user)).order_by('-created_at'))
         return Response(s.EventBookingSerializer(bookings, many=True, context={'request': request, 'lang': request.query_params.get('lang', 'en')}).data)
+
+
+class MyEventBookingCancelView(APIView):
+    """The signed-in customer cancels one of their event bookings (same ownership rule as the list above)."""
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(tags=['Events'], request=s.EventBookingCancelSerializer, responses=s.EventBookingSerializer)
+    def post(self, request, reference):
+        from .event_booking import cancel_event_booking
+        booking = (m.EventRegistration.objects.select_related('schedule__event')
+                   .filter(owned_by(request.user), reference=reference.strip().upper()).first())
+        if booking is None:
+            return Response({'detail': 'Booking not found.'}, status=status.HTTP_404_NOT_FOUND)
+        data = s.EventBookingCancelSerializer(data=request.data)
+        data.is_valid(raise_exception=True)
+        try:
+            booking = cancel_event_booking(booking, reason=data.validated_data['reason'])
+        except DjangoValidationError as exc:
+            return Response({'detail': exc.messages[0]}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(s.EventBookingSerializer(booking, context={'request': request, 'lang': request.query_params.get('lang', 'en')}).data)

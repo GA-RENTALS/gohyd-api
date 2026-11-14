@@ -33,7 +33,7 @@ from payments.models import InvoiceItem, TripExpense
 from payments.models import (BusinessEntity, CreditNote, Expense, ExpenseCategory, FinancialAdjustment,
                             FinancialPeriod, GstConfiguration, Invoice, Payment, PaymentAllocation,
                             PaymentGatewayEvent, PaymentReconciliationRecord, PaymentTransaction,
-                            PaymentVerification, Refund, RefundTransaction, Settlement, VendorInvoice,
+                            PaymentVerification, Refund, RefundTransaction, Settlement, VendorInvoice, EventRefund,
                             VendorPayment)
 from tracking.models import (ConversionEvent, TrackingConsent, Visitor, VisitorEvent, VisitorSession)
 from tracking.models import (AnalyticsDailySummary, AnalyticsEventDefinition, CustomerMetric,
@@ -41,7 +41,7 @@ from tracking.models import (AnalyticsDailySummary, AnalyticsEventDefinition, Cu
                              OperationalPerformanceSummary, ReportDefinition, ReportExecutionHistory,
                              ScheduledReport, TripPerformanceSummary)
 from trips.models import (TripAssignment, TripCategoryLink, TripExclusion, TripStatusHistory, TripThingToBring)
-from trips.models import (EventFAQ, EventFormatDetail, EventHighlight, EventRule)
+from trips.models import (EventFAQ, EventFormatDetail, EventHighlight, EventRefundPolicy, EventRule)
 from trips.models import (Event, EventAttendance, EventExclusion, EventInclusion, EventItinerary,
                           EventItineraryItem, EventParticipant, EventRegistration, EventSchedule,
                           EventThingToBring, EventTranslation, Trip, TripCategory, TripDestination, TripInclusion, TripItinerary,
@@ -89,8 +89,9 @@ RESOURCES = {
         _r('event-registrations', 'events', 'Event bookings', EventRegistration, mode='create_update', personal_data=True,
            search_fields=('reference', 'contact_name', 'contact_phone', 'schedule__event__slug', 'payment_utr'),
            ordering_fields=('created_at', 'status', 'reserved_until', 'payment_submitted_at'),
-           read_only_fields=('reference', 'total_amount', 'confirmed_at', 'cancelled_at')),
+           read_only_fields=('reference', 'total_amount', 'confirmed_at', 'cancelled_at', 'cancel_reason')),
         _r('event-schedules', 'events', 'Event schedules', EventSchedule),
+        _r('event-refund-policies', 'events', 'Event refund policies', EventRefundPolicy),
         _r('event-translations', 'events', 'Event translations', EventTranslation, read_only_fields=('status', 'reviewed_by', 'approved_at')),
         _r('event-itineraries', 'events', 'Event itineraries', EventItinerary, search_fields=('event__slug',)),
         _r('event-itinerary-items', 'events', 'Event itinerary items', EventItineraryItem),
@@ -129,6 +130,7 @@ RESOURCES = {
         _r('payment-verifications', 'payments', 'Payment verifications', PaymentVerification, mode='read', exclude_fields=('proof',)),
         _r('refunds', 'payments', 'Refunds', Refund, mode='read'),
         _r('refund-transactions', 'payments', 'Refund transactions', RefundTransaction, mode='read', exclude_fields=('raw',)),
+        _r('event-refunds', 'payments', 'Event refunds', EventRefund, mode='read', search_fields=('registration__reference', 'registration__contact_phone', 'upi_reference')),
         _r('gateway-events', 'audit', 'Gateway events', PaymentGatewayEvent, mode='read', exclude_fields=('payload',)),
         _r('reconciliations', 'finance', 'Reconciliation', PaymentReconciliationRecord, mode='read'),
         _r('business-entities', 'finance', 'Business entities', BusinessEntity, search_fields=('legal_name', 'gstin')),

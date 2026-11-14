@@ -23,6 +23,7 @@ TEMPLATE_PARAMS = {
     'event_payment_proof': ['name', 'phone', 'event', 'date', 'participants', 'amount', 'reference'],
     'event_confirmed': ['name', 'event', 'date', 'participants', 'reference'],
     'event_cancelled': ['name', 'event', 'reference'],
+    'event_refund_sent': ['name', 'amount', 'event', 'reference', 'upi_reference'],
 }
 
 

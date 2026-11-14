@@ -173,6 +173,32 @@ class Refund(UUIDModel, Timestamped):
         ordering = ['-created_at']
 
 
+class EventRefund(UUIDModel, Timestamped):
+    """Money owed back on a cancelled, paid event booking. Event fees are paid by UPI outside the system, so staff send
+    the refund by hand and record it here; recording it as sent tells the customer on WhatsApp."""
+
+    class Status(models.TextChoices):
+        DUE = 'DUE', 'To send'
+        SENT = 'SENT', 'Sent'
+        NOT_REFUNDED = 'NOT_REFUNDED', 'Not refunded'
+
+    registration = models.OneToOneField('trips.EventRegistration', on_delete=models.PROTECT, related_name='refund')
+    status = models.CharField(max_length=14, choices=Status.choices, default=Status.DUE, db_index=True)
+    amount = models.DecimalField(validators=[MinValueValidator(0)], help_text='Due when opened; what was actually sent once recorded.', **MONEY)
+    refund_basis_points = models.PositiveSmallIntegerField(validators=[MaxValueValidator(10000)], editable=False)
+    upi_reference = models.CharField('UPI transaction ID', max_length=40, blank=True)
+    note = models.CharField(max_length=255, blank=True)
+    recorded_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name='+')
+    recorded_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'event_refunds'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'{self.registration.reference} · ₹{self.amount} · {self.get_status_display()}'
+
+
 class RefundTransaction(UUIDModel):
     """Refunds are separate transactions, never edits of the original payment."""
     refund = models.ForeignKey(Refund, on_delete=models.PROTECT, related_name='transactions')

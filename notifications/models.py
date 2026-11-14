@@ -22,6 +22,7 @@ class NotificationEvent(models.TextChoices):
     EVENT_PAYMENT_PROOF = 'event_payment_proof'
     EVENT_CONFIRMED = 'event_confirmed'
     EVENT_CANCELLED = 'event_cancelled'
+    EVENT_REFUND_SENT = 'event_refund_sent'
 
 
 class Channel(models.TextChoices):

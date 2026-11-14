@@ -49,6 +49,7 @@ def create_event_booking(*, event_slug, schedule_id, name, phone, participant_co
             schedule=schedule, contact_name=name, contact_phone=phone, contact_email=email,
             participant_count=participant_count,
             unit_price=event.price, customer_note=note, source=source, status=EventRegistration.Status.PENDING,
+            refund_policy_snapshot=event.refund_tiers(),   # later policy changes don't affect this booking
         )
         if coupon_code:
             try:
@@ -77,6 +78,24 @@ def create_event_booking(*, event_slug, schedule_id, name, phone, participant_co
                 f'Customer note: {note}' if note else '',
             ])),
         )
+    return booking
+
+
+def cancel_event_booking(booking, *, reason=''):
+    """The customer cancels their own booking. Frees the places; a paid booking gets a refund by the event's policy
+    (recorded as due for staff to send by UPI). Raises ValidationError with a field dict."""
+    with transaction.atomic():
+        booking = (EventRegistration.objects.select_for_update(of=('self',)).select_related('schedule__event')
+                   .get(pk=booking.pk))
+        if not booking.can_customer_cancel():
+            if booking.effective_status not in (EventRegistration.Status.PENDING, EventRegistration.Status.CONFIRMED):
+                raise ValidationError({'detail': 'This booking is no longer active.'})
+            raise ValidationError({'detail': 'Online cancellation has closed for this event. Message us on WhatsApp.'})
+        booking._refund_basis_points, _ = booking.refund_quote()
+        booking.status = EventRegistration.Status.CANCELLED
+        booking.cancelled_by_customer = True
+        booking.cancel_reason = (reason or '').strip()[:255]
+        booking.save()
     return booking
 
 
