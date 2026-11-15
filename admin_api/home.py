@@ -6,6 +6,7 @@ Numbers reuse the rules in overview.py: trip money = successful payment allocati
 from collections import defaultdict
 from datetime import timedelta
 from decimal import Decimal
+from urllib.parse import urlencode
 
 from django.db.models import Count, Q, Sum
 from django.db.models.functions import TruncDate
@@ -24,6 +25,17 @@ from .listing import (TRIP_AWAITING, TRIP_CANCELLED, TRIP_PAID, event_booking_ro
 from .overview import ZERO, _can, _iso, _money
 from .permissions import StaffOnly, staff_has_perm
 from .views import AdminDashboardView, _access_log, _resolve
+
+# Payments page tab for each payment status (admin_api/payments.py STATUS groups).
+_PAYMENT_TAB = {Payment.Status.PENDING_VERIFICATION: 'pending', Payment.Status.SUCCEEDED: 'succeeded', Payment.Status.FAILED: 'failed'}
+
+
+def _payment_href(payment):
+    """The Payments page filtered to this payment: found by its booking reference, else by the payer's phone."""
+    booking = next((a.booking for a in payment.allocations.all()), None)
+    query = urlencode({'type': 'trip', 'status': _PAYMENT_TAB.get(payment.status, 'all'),
+                       'search': booking.reference if booking else payment.payer.phone_number})
+    return f'/admin/payments?{query}'
 
 # ---------- dashboard ----------
 
@@ -168,7 +180,9 @@ class HomeView(APIView):
         if see_pay:
             activity += [{'type': 'payment', 'at': _iso(p.created_at), 'name': p.payer.full_name or p.payer.phone_number,
                           'text': f'paid ({p.get_method_display().lower()}, {p.kind.lower()})', 'amount': _money(p.amount), 'status': p.status,
-                          'href': '/admin/payments/payments'} for p in Payment.objects.select_related('payer').exclude(status=Payment.Status.CREATED).order_by('-created_at')[:8]]
+                          'href': _payment_href(p)}
+                         for p in (Payment.objects.select_related('payer').prefetch_related('allocations__booking')
+                                   .exclude(status=Payment.Status.CREATED).order_by('-created_at')[:8])]
         activity.sort(key=lambda a: a['at'], reverse=True)
 
         legacy = AdminDashboardView()

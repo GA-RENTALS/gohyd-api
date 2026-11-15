@@ -110,7 +110,7 @@ class CheckoutViewSet(viewsets.ReadOnlyModelViewSet):
     pagination_class = None
 
     def get_queryset(self):
-        return m.CheckoutOrder.objects.filter(user=self.request.user).prefetch_related('bookings__schedule__trip__translations', 'bookings__schedule__trip__cover', 'bookings__pickup_point', 'bookings__participants', 'bookings__invoices')
+        return m.CheckoutOrder.objects.filter(user=self.request.user).prefetch_related('bookings__schedule__trip__translations', 'bookings__schedule__trip__cover', 'bookings__pickup_point', 'bookings__participants', 'bookings__invoices', 'payments')
 
     @extend_schema(tags=['Checkout'], request=s.CreateCheckoutSerializer, responses=s.CheckoutSerializer)
     def create(self, request):
@@ -191,7 +191,7 @@ class BookingViewSet(viewsets.ReadOnlyModelViewSet):
         """Cancel this booking only; others in the same checkout are unaffected."""
         booking = self.get_object()
         try:
-            booking = cancel_booking(booking, request.user, request.data.get('reason', ''), request)
+            booking = cancel_booking(booking, request.user, request.data.get('reason', ''), request, by_customer=True)
         except BookingError as e:
             return fail(e)
         return Response(s.BookingSerializer(booking).data)

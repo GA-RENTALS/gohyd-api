@@ -2,7 +2,7 @@ from rest_framework import serializers
 
 from payments.models import Payment
 from . import models as m
-from .services import can_depart, outstanding, paid_amount
+from .services import can_depart, checkout_hold_until, customer_can_cancel, outstanding, paid_amount
 
 
 class ParticipantSerializer(serializers.ModelSerializer):
@@ -23,11 +23,12 @@ class BookingSerializer(serializers.ModelSerializer):
     is_overdue = serializers.SerializerMethodField()
     participants = ParticipantSerializer(many=True, read_only=True)
     invoice_number = serializers.SerializerMethodField()
+    can_cancel = serializers.SerializerMethodField(help_text='The customer may still cancel this booking online.')
 
     class Meta:
         model = m.Booking
         fields = ('id', 'reference', 'status', 'checkout', 'trip', 'trip_title', 'trip_cover', 'pickup_point_name', 'created_at', 'starts_at', 'participant_count', 'currency', 'discount_amount', 'subtotal', 'tax_amount', 'total_amount', 'invoice_number',
-                  'advance_basis_points', 'advance_amount', 'balance_amount', 'balance_due_at', 'paid', 'outstanding', 'is_overdue', 'participants')
+                  'advance_basis_points', 'advance_amount', 'balance_amount', 'balance_due_at', 'paid', 'outstanding', 'is_overdue', 'can_cancel', 'participants')
 
     def get_trip_title(self, o):
         """A customer who booked a trip should always see its name, even if the translation is not published any more."""
@@ -50,6 +51,7 @@ class BookingSerializer(serializers.ModelSerializer):
         inv = o.invoices.first()
         return inv.number if inv else None
 
+    def get_can_cancel(self, o): return customer_can_cancel(o)
     def get_paid(self, o): return paid_amount(o)
     def get_outstanding(self, o): return outstanding(o)
 
@@ -76,10 +78,14 @@ class CouponPreviewSerializer(serializers.Serializer):
 
 class CheckoutSerializer(serializers.ModelSerializer):
     bookings = BookingSerializer(many=True, read_only=True)
+    hold_until = serializers.SerializerMethodField(help_text='When the seats of this unpaid checkout are released (null once paid).')
 
     class Meta:
         model = m.CheckoutOrder
-        fields = ('id', 'reference', 'status', 'currency', 'coupon_code', 'discount_total', 'total_amount', 'advance_total', 'created_at', 'bookings')
+        fields = ('id', 'reference', 'status', 'currency', 'coupon_code', 'discount_total', 'total_amount', 'advance_total', 'created_at',
+                  'hold_until', 'bookings')
+
+    def get_hold_until(self, o): return checkout_hold_until(o)
 
     coupon_code = serializers.CharField(source='coupon.code', default=None, read_only=True)
 

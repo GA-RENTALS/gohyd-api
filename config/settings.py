@@ -187,6 +187,7 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # Business defaults. The live values are admin-editable (core.Setting); these are only first-run fallbacks.
 DEFAULT_ADVANCE_BASIS_POINTS = int(os.getenv('DEFAULT_ADVANCE_BASIS_POINTS', '3000'))     # 30%: placeholder, not a business decision
 DEFAULT_BALANCE_DUE_DAYS_BEFORE = int(os.getenv('DEFAULT_BALANCE_DUE_DAYS_BEFORE', '7'))  # placeholder
+CHECKOUT_HOLD_MINUTES = int(os.getenv('CHECKOUT_HOLD_MINUTES', '30'))   # unpaid trip checkouts release their seats after this
 CURRENCY = 'INR'
 
 # Sign-in codes (section 4.1)
@@ -212,6 +213,7 @@ CELERY_BEAT_SCHEDULE = {
     'outbox-relay': {'task': 'core.tasks.relay_outbox', 'schedule': 5.0},
     'balance-reminders': {'task': 'notifications.tasks.queue_balance_reminders', 'schedule': 3600.0},
     'trip-reminders': {'task': 'notifications.tasks.queue_trip_reminders', 'schedule': 3600.0},
+    'expire-unpaid-checkouts': {'task': 'bookings.tasks.expire_unpaid_checkouts', 'schedule': 300.0},
 }
 
 CORS_ALLOWED_ORIGINS = [o.strip() for o in os.getenv('CORS_ALLOWED_ORIGINS', '').split(',') if o.strip()]

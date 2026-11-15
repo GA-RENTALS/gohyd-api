@@ -202,8 +202,8 @@ class CouponCheckoutTests(TenantTestCase):
         t2, _ = make_trip('b')
         c = self._coupon(max_redemptions=1, per_user_limit=5)
         create_checkout(self.user, [CheckoutLine(s1.pk, 1)], 'c3', coupon_code='MONSOON10')
-        with self.assertRaises(BookingError) as e:
-            create_checkout(self.user, [CheckoutLine(s1.pk, 1)], 'c4', coupon_code='MONSOON10')
+        with self.assertRaises(BookingError) as e:      # another customer: the same customer retrying gets the use back
+            create_checkout(make_user('+919811110000'), [CheckoutLine(s1.pk, 1)], 'c4', coupon_code='MONSOON10')
         self.assertEqual(e.exception.code, 'invalid_coupon')
         only_b = self._coupon(code='BONLY')
         only_b.trips.add(t2)

@@ -45,6 +45,9 @@ def start_online_payment(user, checkout: CheckoutOrder, kind: str, idempotency_k
         if existing.payer_id != user.pk:
             raise BookingError('Idempotency key already used.', 'idempotency_conflict')
         return existing
+    if checkout.status == CheckoutOrder.Status.EXPIRED:
+        raise BookingError('This checkout expired and its seats were released. Please book again from the trip page.',
+                           'checkout_expired')
     bookings = list(checkout.bookings.select_for_update().all())
     if booking_ids:
         bookings = [b for b in bookings if str(b.pk) in {str(i) for i in booking_ids}]
@@ -88,14 +91,27 @@ def mark_succeeded(payment_id, gateway_payment_id=None, raw=None, fee=None):
     if allocated != p.amount:
         # never silently mis-allocate: flag for finance
         SecurityEvent.objects.create(kind='payment_allocation_mismatch', detail={'payment': str(p.pk), 'allocated': str(allocated), 'amount': str(p.amount)})
-    for booking_id in plan:
-        refresh_booking_status(Booking.objects.get(pk=booking_id), actor=p.payer)
+    for booking_id, amt in plan.items():
+        booking = refresh_booking_status(Booking.objects.get(pk=booking_id), actor=p.payer)
+        if booking.status == Booking.Status.CANCELLED:
+            _refund_late_payment(p, booking, amt)
     order = CheckoutOrder.objects.select_for_update().get(pk=p.checkout_id)
     order.status = checkout_status(order)
     order.save(update_fields=['status', 'updated_at'])
     emit('payment.succeeded', p.pk, {'checkout': str(order.pk), 'kind': p.kind, 'amount': str(p.amount)})
     audit(p.payer, 'payment.succeeded', p, p.pk, after={'amount': str(p.amount)})
     return p, True
+
+
+def _refund_late_payment(payment, booking, amount):
+    """Money arrived for a booking that was already cancelled (its checkout expired while the customer was still paying).
+    The seats may be gone, so don't revive it: request a full refund for finance to approve, and flag it."""
+    refund = Refund.objects.create(booking=booking, amount=amount, tax_adjustment=Decimal('0.00'),
+                                   reason='Paid after the checkout expired; seats had been released.', requested_by=None)
+    SecurityEvent.objects.create(kind='payment_after_expiry', detail={'payment': str(payment.pk), 'booking': booking.reference,
+                                                                     'amount': str(amount), 'refund': str(refund.pk)})
+    emit('refund.requested', refund.pk, {'booking': str(booking.pk)})
+    logger.warning('Payment %s arrived for cancelled booking %s; refund %s requested.', payment.pk, booking.reference, refund.pk)
 
 
 @transaction.atomic

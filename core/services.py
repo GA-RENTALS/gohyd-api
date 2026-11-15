@@ -7,6 +7,7 @@ from .models import AuditLog, OutboxEvent, Setting
 _DEFAULTS = {
     'advance.default_basis_points': lambda: settings.DEFAULT_ADVANCE_BASIS_POINTS,
     'balance.default_due_days_before': lambda: settings.DEFAULT_BALANCE_DUE_DAYS_BEFORE,
+    'checkout.hold_minutes': lambda: settings.CHECKOUT_HOLD_MINUTES,
 }
 
 

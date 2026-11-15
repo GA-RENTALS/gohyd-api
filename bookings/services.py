@@ -1,15 +1,16 @@
 """
 Booking domain logic. Everything money- or capacity-related runs here, server-side, inside transactions.
 
-Capacity: seats are committed when the booking rows are created (no separate temporary hold), under a row lock on each
-TripSchedule, and the whole checkout is all-or-nothing (section 3.3).
+Capacity: seats are committed when the booking rows are created, under a row lock on each TripSchedule, and the whole
+checkout is all-or-nothing (section 3.3). An unpaid checkout holds its seats only for `checkout.hold_minutes` after the
+last activity (creating it, or opening the payment window); `expire_unpaid_checkouts` then releases them.
 """
 from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal
 
 from django.db import transaction
-from django.db.models import F, Sum
+from django.db.models import F, Max, Q, Sum
 from django.utils import timezone
 
 from core.money import AdvanceSplit, add_gst, extract_gst, percent_of, q, split_advance
@@ -109,6 +110,12 @@ def create_checkout(user, lines, idempotency_key, request=None, coupon_code=None
     ids = sorted({str(l.schedule_id) for l in lines})
     if len(ids) != len(lines):
         raise BookingError('Each trip date can appear only once per checkout.', 'duplicate_line')
+
+    # Going back and pressing "Continue to checkout" again must not hold the same seats twice: release this customer's
+    # earlier unpaid checkouts for these dates first (never one that is being paid or has been paid).
+    for earlier in (CheckoutOrder.objects.filter(user=user, status=CheckoutOrder.Status.PENDING, bookings__schedule_id__in=ids)
+                    .exclude(payments__status__in=HELD_BY_PAYMENT).distinct()):
+        expire_checkout(earlier, reason='Replaced by a newer checkout.', skip_if_paying=True)
     schedules = {str(s.pk): s for s in TripSchedule.objects.select_for_update().select_related('trip').filter(pk__in=ids).order_by('pk')}
 
     failures, now = [], timezone.now()
@@ -236,21 +243,46 @@ def refund_percent_for(booking, now=None):
     return 0
 
 
+def _release_seats(booking):
+    """Gives the booking's seats back to its trip date. Safe to call twice: released allocations are skipped."""
+    now = timezone.now()
+    for alloc in booking.seat_allocations.select_for_update().filter(released_at__isnull=True):
+        TripSchedule.objects.filter(pk=alloc.schedule_id).update(seats_booked=F('seats_booked') - alloc.seats)
+        alloc.released_at = now
+        alloc.save(update_fields=['released_at'])
+
+
+def refund_quote(booking, now=None):
+    """(basis points, amount) a cancellation right now would refund, from the booking's policy snapshot."""
+    paid = paid_amount(booking) - refunded_amount(booking)
+    bp = refund_percent_for(booking, now)
+    return bp, (min(percent_of(paid, bp), paid) if paid > 0 else Decimal('0.00'))
+
+
+def customer_can_cancel(booking, now=None):
+    """Customers may cancel online until the trip starts; afterwards only staff can (e.g. to record a no-show instead)."""
+    now = now or timezone.now()
+    return (booking.status in (Booking.Status.PENDING_ADVANCE, Booking.Status.CONFIRMED, Booking.Status.FULLY_PAID)
+            and booking.schedule.starts_at > now)
+
+
 @transaction.atomic
-def cancel_booking(booking, actor, reason='', request=None):
-    """Cancels ONE booking, releases its seats, and requests a refund per its policy snapshot. Others in the checkout are untouched."""
+def cancel_booking(booking, actor, reason='', request=None, by_customer=False):
+    """Cancels ONE booking, releases its seats, and requests a refund per its policy snapshot. Others in the checkout are untouched.
+
+    `by_customer`: the customer is cancelling from their account, so the trip must not have started yet.
+    """
     from payments.models import Refund
-    booking = Booking.objects.select_for_update().get(pk=booking.pk)
+    booking = Booking.objects.select_for_update().select_related('schedule').get(pk=booking.pk)
     if booking.status == Booking.Status.CANCELLED:
         return booking
     if booking.status in (Booking.Status.COMPLETED, Booking.Status.NO_SHOW):
         raise BookingError('This booking can no longer be cancelled.', 'not_cancellable')
-    paid = paid_amount(booking) - refunded_amount(booking)
-    bp = refund_percent_for(booking)
-    refund_amount = min(percent_of(paid, bp), paid) if paid > 0 else Decimal('0.00')
-    for alloc in booking.seat_allocations.select_for_update().filter(released_at__isnull=True):
-        TripSchedule.objects.filter(pk=alloc.schedule_id).update(seats_booked=F('seats_booked') - alloc.seats)
-        alloc.released_at = timezone.now(); alloc.save(update_fields=['released_at'])
+    if by_customer and not customer_can_cancel(booking):
+        raise BookingError('This trip has already started, so it can no longer be cancelled online. Message us on WhatsApp.',
+                           'trip_started')
+    bp, refund_amount = refund_quote(booking)
+    _release_seats(booking)
     _log(booking, Booking.Status.CANCELLED, actor, reason)
     booking.status = Booking.Status.CANCELLED
     booking.save(update_fields=['status', 'updated_at'])
@@ -262,6 +294,70 @@ def cancel_booking(booking, actor, reason='', request=None):
     audit(actor, 'booking.cancel', booking, booking.pk, after={'refund': str(refund_amount), 'bp': bp}, request=request)
     emit('booking.cancelled', booking.pk, {'reference': booking.reference})
     return booking
+
+
+# ---------- unpaid checkouts: seats are held only for a while ----------
+# A checkout with one of these payments is being paid (or was), so its seats are never released automatically.
+HELD_BY_PAYMENT = (Payment.Status.SUCCEEDED, Payment.Status.PENDING_VERIFICATION)
+
+
+def checkout_hold_minutes() -> int:
+    return int(get_setting('checkout.hold_minutes'))
+
+
+def checkout_hold_until(order):
+    """When an unpaid checkout lets its seats go: `hold_minutes` after it was created or the payment window last opened."""
+    if order.status != CheckoutOrder.Status.PENDING:
+        return None
+    last = max([order.created_at, *(p.created_at for p in order.payments.all())])
+    return last + timedelta(minutes=checkout_hold_minutes())
+
+
+@transaction.atomic
+def expire_checkout(order, reason='Not paid in time: seats released.', skip_if_paying=False):
+    """Releases the seats of an unpaid checkout and marks it EXPIRED. Returns False (and changes nothing) if it has any money.
+
+    Locks in the same order as payments.services.mark_succeeded (payments, then bookings, then the checkout), so an
+    expiry and a payment that lands at the same moment can't deadlock: whichever commits first wins, and the other sees it.
+    `skip_if_paying`: also leave it alone while a payment window opened within the hold time is still in progress.
+    """
+    from crm.models import CouponRedemption
+    payments = list(Payment.objects.select_for_update().filter(checkout_id=order.pk))
+    if any(p.status in HELD_BY_PAYMENT for p in payments):
+        return False
+    if skip_if_paying:
+        cutoff = timezone.now() - timedelta(minutes=checkout_hold_minutes())
+        if any(p.status == Payment.Status.CREATED and p.created_at > cutoff for p in payments):
+            return False
+    bookings = list(Booking.objects.select_for_update().filter(checkout_id=order.pk).order_by('pk'))
+    order = CheckoutOrder.objects.select_for_update().get(pk=order.pk)
+    if order.status != CheckoutOrder.Status.PENDING:
+        return False
+    for booking in bookings:
+        if booking.status != Booking.Status.PENDING_ADVANCE:
+            continue
+        _release_seats(booking)
+        _log(booking, Booking.Status.CANCELLED, None, reason)
+        booking.status = Booking.Status.CANCELLED
+        booking.save(update_fields=['status', 'updated_at'])
+        BookingCancellation.objects.create(booking=booking, requested_by=None, reason=reason[:255],
+                                           refund_basis_points=0, refund_amount=Decimal('0.00'))
+    CouponRedemption.objects.filter(checkout=order).delete()      # the coupon use goes back to the pool
+    order.status = CheckoutOrder.Status.EXPIRED
+    order.save(update_fields=['status', 'updated_at'])
+    audit(None, 'checkout.expire', order, order.pk, after={'reason': reason, 'bookings': [b.reference for b in bookings]})
+    return True
+
+
+def expire_unpaid_checkouts(now=None):
+    """Expires every unpaid checkout whose hold has run out (for the current tenant). Returns how many were expired."""
+    now = now or timezone.now()
+    cutoff = now - timedelta(minutes=checkout_hold_minutes())
+    stale = (CheckoutOrder.objects.filter(status=CheckoutOrder.Status.PENDING, created_at__lte=cutoff)
+             .exclude(payments__status__in=HELD_BY_PAYMENT)
+             .annotate(last_attempt=Max('payments__created_at'))
+             .filter(Q(last_attempt__isnull=True) | Q(last_attempt__lte=cutoff)))
+    return sum(1 for order in stale if expire_checkout(order, skip_if_paying=True))
 
 
 # ---------- departure clearance (3.2) ----------
