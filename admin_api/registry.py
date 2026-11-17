@@ -140,7 +140,7 @@ RESOURCES = {
         _r('expense-categories', 'finance', 'Expense categories', ExpenseCategory, search_fields=('name',)),
         _r('expenses', 'finance', 'Expenses', Expense, search_fields=('description',), personal_data=True),
         _r('vendor-invoices', 'finance', 'Vendor invoices', VendorInvoice, search_fields=('number',)),
-        _r('vendor-payments', 'finance', 'Vendor payments', VendorPayment, mode='read'),
+        _r('vendor-payments', 'finance', 'Vendor payments', VendorPayment, mode='create_update'),   # no delete: a payment record is kept
         _r('settlements', 'finance', 'Settlements', Settlement, mode='read'),
         _r('financial-periods', 'finance', 'Financial periods', FinancialPeriod),
         _r('financial-adjustments', 'finance', 'Financial adjustments', FinancialAdjustment, mode='create'),
@@ -274,6 +274,18 @@ MODULE_LABELS = {
     'cms': 'CMS', 'notifications': 'Notifications', 'memberships': 'Memberships', 'marketing': 'Marketing', 'analytics': 'Analytics',
     'permissions': 'Permissions', 'audit': 'Audit logs', 'system': 'System',
 }
+
+# Tables that no screen, job or customer flow fills yet (NEXT.md item 28). They stay reachable by address, but "All data"
+# leaves them out so staff don't mistake an empty or demo-only list for a working feature. Remove a key once it is built.
+NOT_IN_USE = frozenset({
+    'analytics-daily', 'trip-performance', 'financial-performance', 'operational-performance', 'marketing-attribution',
+    'customer-metrics', 'kpi-definitions', 'event-definitions', 'report-definitions', 'scheduled-reports', 'report-executions',
+    'settlements', 'reconciliations',
+    'backups', 'system-health', 'integration-runs', 'integration-health',
+    'galleries', 'gallery-items', 'seo-metadata', 'publishing-schedules',
+    'memberships', 'membership-transactions', 'loyalty-transactions', 'reviews',
+})
+assert NOT_IN_USE <= RESOURCES.keys(), NOT_IN_USE - RESOURCES.keys()
 
 
 def get_resource(key):

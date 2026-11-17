@@ -337,7 +337,7 @@ class EventListSerializer(serializers.ModelSerializer):
         today = timezone.localdate()
         return [
             schedule for schedule in o.schedules.all()
-            if (timezone.localtime(schedule.starts_at).date() >= today if schedule.time_tbd
+            if not schedule.cancelled_at and (timezone.localtime(schedule.starts_at).date() >= today if schedule.time_tbd
                 else schedule.starts_at > timezone.now())
         ]
 

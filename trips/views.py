@@ -60,7 +60,7 @@ class EventBookingCreateView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
     throttle_classes = [TrustedScopedRateThrottle]
-    throttle_scope = 'enquiry'
+    throttle_scope = 'event_booking'
 
     @extend_schema(tags=['Events'], request=s.EventBookingCreateSerializer, responses=s.EventBookingSerializer)
     def post(self, request):
@@ -84,7 +84,7 @@ class EventCouponPreviewView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
     throttle_classes = [TrustedScopedRateThrottle]
-    throttle_scope = 'enquiry'
+    throttle_scope = 'coupon_preview'
 
     @extend_schema(tags=['Events'], request=s.EventCouponPreviewSerializer)
     def post(self, request):
@@ -117,14 +117,14 @@ class EventBookingStatusView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
     throttle_classes = [TrustedScopedRateThrottle]
-    throttle_scope = 'enquiry'
+    throttle_scope = 'booking_lookup'
 
     @extend_schema(tags=['Events'], responses=s.EventBookingSerializer)
-    def get(self, request, reference):
+    def post(self, request, reference):
         from accounts.models import normalize_phone
         not_found = Response({'detail': 'No booking matches that reference and phone number.'}, status=status.HTTP_404_NOT_FOUND)
         try:
-            phone = normalize_phone(request.query_params.get('phone', ''))
+            phone = normalize_phone(request.data.get('phone', ''))
         except DjangoValidationError:
             return not_found
         booking = (m.EventRegistration.objects.select_related('schedule__event')
@@ -139,7 +139,7 @@ class EventPaymentProofView(APIView):
     permission_classes = [AllowAny]
     authentication_classes = []
     throttle_classes = [TrustedScopedRateThrottle]
-    throttle_scope = 'enquiry'
+    throttle_scope = 'payment_proof'
     parser_classes = [MultiPartParser, FormParser]
 
     @extend_schema(tags=['Events'], request={'multipart/form-data': s.EventPaymentProofSerializer}, responses=s.EventBookingSerializer)

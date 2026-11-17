@@ -3,7 +3,7 @@ from django.contrib.auth.models import Group, Permission
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
-from core.models import Setting
+from core.services import ensure_default_settings
 
 # role -> {app_label: actions}; actions: view/add/change/delete (+ custom perms by codename)
 ALL = ('view', 'add', 'change', 'delete')
@@ -63,12 +63,9 @@ class Command(BaseCommand):
                 chosen.append(perms[(app, code)])
             g.permissions.set(chosen)
 
-        Setting.objects.get_or_create(key='advance.default_basis_points', defaults={'value': settings.DEFAULT_ADVANCE_BASIS_POINTS,
-                                      'description': 'Default advance % in basis points (3000 = 30%). PLACEHOLDER: set the real business value.'})
+        ensure_default_settings()
         from content.site_settings import ensure_homepage_stats
         ensure_homepage_stats()
-        Setting.objects.get_or_create(key='balance.default_due_days_before', defaults={'value': settings.DEFAULT_BALANCE_DUE_DAYS_BEFORE,
-                                      'description': 'Balance due this many days before departure. PLACEHOLDER: set the real business value.'})
         BusinessEntity.objects.get_or_create(legal_name='GoHyderabad (set legal name)', defaults={'is_default': True})
         GstConfiguration.objects.get_or_create(name='GST (placeholder, needs tax adviser sign-off)', defaults=dict(
             enabled=False, rate_basis_points=0, effective_from=timezone.now(), is_default=True))

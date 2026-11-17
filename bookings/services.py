@@ -267,10 +267,11 @@ def customer_can_cancel(booking, now=None):
 
 
 @transaction.atomic
-def cancel_booking(booking, actor, reason='', request=None, by_customer=False):
+def cancel_booking(booking, actor, reason='', request=None, by_customer=False, full_refund=False):
     """Cancels ONE booking, releases its seats, and requests a refund per its policy snapshot. Others in the checkout are untouched.
 
     `by_customer`: the customer is cancelling from their account, so the trip must not have started yet.
+    `full_refund`: return everything paid regardless of the policy (the operator cancelled the departure).
     """
     from payments.models import Refund
     booking = Booking.objects.select_for_update().select_related('schedule').get(pk=booking.pk)
@@ -281,7 +282,10 @@ def cancel_booking(booking, actor, reason='', request=None, by_customer=False):
     if by_customer and not customer_can_cancel(booking):
         raise BookingError('This trip has already started, so it can no longer be cancelled online. Message us on WhatsApp.',
                            'trip_started')
-    bp, refund_amount = refund_quote(booking)
+    if full_refund:
+        bp, refund_amount = 10000, max(Decimal('0.00'), paid_amount(booking) - refunded_amount(booking))
+    else:
+        bp, refund_amount = refund_quote(booking)
     _release_seats(booking)
     _log(booking, Booking.Status.CANCELLED, actor, reason)
     booking.status = Booking.Status.CANCELLED
@@ -294,6 +298,29 @@ def cancel_booking(booking, actor, reason='', request=None, by_customer=False):
     audit(actor, 'booking.cancel', booking, booking.pk, after={'refund': str(refund_amount), 'bp': bp}, request=request)
     emit('booking.cancelled', booking.pk, {'reference': booking.reference})
     return booking
+
+
+ACTIVE_BOOKING_STATUSES = (Booking.Status.PENDING_ADVANCE, Booking.Status.CONFIRMED, Booking.Status.FULLY_PAID)
+
+
+@transaction.atomic
+def cancel_trip_date(schedule, actor, reason, full_refund=True, request=None):
+    """The operator cancels a whole departure (weather, too few people): closes it, cancels every active booking with one
+    reason, requests each refund (all of it by default, or the customer's policy share) and sends each customer the
+    cancellation message. Returns the cancelled bookings."""
+    schedule = TripSchedule.objects.select_for_update().get(pk=schedule.pk)
+    if schedule.cancelled_at:
+        raise BookingError('This date has already been cancelled.', 'already_cancelled')
+    if schedule.starts_at <= timezone.now():
+        raise BookingError('This date has already started. Cancel its bookings one by one instead.', 'started')
+    bookings = list(Booking.objects.filter(schedule=schedule, status__in=ACTIVE_BOOKING_STATUSES).order_by('created_at'))
+    for booking in bookings:
+        cancel_booking(booking, actor, reason, request=request, full_refund=full_refund)
+    schedule.is_open, schedule.cancelled_at = False, timezone.now()
+    schedule.save(update_fields=['is_open', 'cancelled_at', 'updated_at'])
+    audit(actor, 'trip_schedule.cancel', schedule, schedule.pk, request=request,
+          after={'reason': reason, 'bookings': len(bookings), 'full_refund': full_refund})
+    return bookings
 
 
 # ---------- unpaid checkouts: seats are held only for a while ----------

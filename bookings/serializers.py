@@ -1,8 +1,12 @@
+from datetime import timedelta
+
+from django.utils import timezone
 from rest_framework import serializers
 
 from payments.models import Payment
 from . import models as m
-from .services import can_depart, checkout_hold_until, customer_can_cancel, outstanding, paid_amount
+from .services import (can_depart, checkout_hold_until, customer_can_cancel, outstanding, paid_amount,
+                       refund_quote)
 
 
 class ParticipantSerializer(serializers.ModelSerializer):
@@ -24,11 +28,13 @@ class BookingSerializer(serializers.ModelSerializer):
     participants = ParticipantSerializer(many=True, read_only=True)
     invoice_number = serializers.SerializerMethodField()
     can_cancel = serializers.SerializerMethodField(help_text='The customer may still cancel this booking online.')
+    cancellation_quote = serializers.SerializerMethodField(help_text='Current refund amount and policy cutoff if cancelled now.')
 
     class Meta:
         model = m.Booking
         fields = ('id', 'reference', 'status', 'checkout', 'trip', 'trip_title', 'trip_cover', 'pickup_point_name', 'created_at', 'starts_at', 'participant_count', 'currency', 'discount_amount', 'subtotal', 'tax_amount', 'total_amount', 'invoice_number',
-                  'advance_basis_points', 'advance_amount', 'balance_amount', 'balance_due_at', 'paid', 'outstanding', 'is_overdue', 'can_cancel', 'participants')
+                  'advance_basis_points', 'advance_amount', 'balance_amount', 'balance_due_at', 'paid', 'outstanding', 'is_overdue',
+                  'can_cancel', 'cancellation_quote', 'participants')
 
     def get_trip_title(self, o):
         """A customer who booked a trip should always see its name, even if the translation is not published any more."""
@@ -52,11 +58,21 @@ class BookingSerializer(serializers.ModelSerializer):
         return inv.number if inv else None
 
     def get_can_cancel(self, o): return customer_can_cancel(o)
+    def get_cancellation_quote(self, o):
+        if not customer_can_cancel(o):
+            return None
+        basis_points, amount = refund_quote(o)
+        days_until_departure = (o.schedule.starts_at - timezone.now()).total_seconds() / 86400
+        tiers = sorted(o.refund_policy_snapshot or [], key=lambda tier: -tier['days_before'])
+        current_tier = next((tier for tier in tiers if days_until_departure >= tier['days_before']), None)
+        cutoff = (o.schedule.starts_at - timedelta(days=current_tier['days_before'])
+                  if current_tier else None)
+        return {'refund_percent': basis_points / 100, 'refund_amount': str(amount),
+                'paid': str(paid_amount(o)), 'policy_cutoff': cutoff.isoformat() if cutoff else None}
     def get_paid(self, o): return paid_amount(o)
     def get_outstanding(self, o): return outstanding(o)
 
     def get_is_overdue(self, o):
-        from django.utils import timezone
         return o.status not in ('FULLY_PAID', 'CANCELLED', 'COMPLETED') and outstanding(o) > 0 and o.balance_due_at < timezone.now()
 
 

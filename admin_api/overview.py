@@ -138,7 +138,8 @@ class TripOverviewView(APIView):
         _access_log(request, _resolve('bookings'), purpose='trip overview')
         return Response({
             'kind': 'trip', 'id': str(trip.pk), 'slug': trip.slug, 'title': _title(trip),
-            'status': trip.status, 'operational_status': trip.operational_status, 'operational_label': trip.get_operational_status_display(),
+            'status': trip.status, 'publish_at': _iso(trip.publish_at), 'operational_status': trip.operational_status,
+            'operational_label': trip.get_operational_status_display(),
             'schedules': [{
                 'id': str(s.pk), 'starts_at': _iso(s.starts_at), 'ends_at': _iso(s.ends_at), 'capacity': s.capacity,
                 'booked': s.seats_booked, 'price': _money(s.price_per_participant), 'is_open': s.is_open,
@@ -226,7 +227,7 @@ class EventOverviewView(APIView):
         _access_log(request, _resolve('event-registrations'), purpose='event overview')
         return Response({
             'kind': 'event', 'id': str(event.pk), 'slug': event.slug, 'title': _title(event),
-            'status': event.status, 'price': _money(event.price), 'venue': event.venue_name,
+            'status': event.status, 'publish_at': _iso(event.publish_at), 'price': _money(event.price), 'venue': event.venue_name,
             'schedules': [{
                 'id': str(s.pk), 'starts_at': _iso(s.starts_at), 'ends_at': _iso(s.ends_at), 'capacity': s.capacity,
                 'booked': s.reserved_count(now), 'is_open': not s.has_started(now),

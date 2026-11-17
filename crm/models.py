@@ -128,6 +128,13 @@ class CustomerInteraction(TenantBound):
 
 
 class CorporateEnquiry(UUIDModel, Timestamped):
+    class Status(models.TextChoices):
+        NEW = 'NEW'
+        CONTACTED = 'CONTACTED'
+        QUALIFIED = 'QUALIFIED'
+        CONVERTED = 'CONVERTED'
+        LOST = 'LOST'
+
     company = models.CharField(max_length=200)
     contact_name = models.CharField(max_length=150)
     phone = models.CharField(max_length=20, blank=True)
@@ -135,7 +142,7 @@ class CorporateEnquiry(UUIDModel, Timestamped):
     group_size = models.PositiveIntegerField(null=True, blank=True)
     preferred_dates = models.CharField(max_length=200, blank=True)
     brief = models.TextField(blank=True)
-    status = models.CharField(max_length=12, default='NEW')
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.NEW, db_index=True)
 
     class Meta:
         db_table = 'corporate_enquiries'
@@ -225,7 +232,17 @@ class Coupon(UUIDModel, Timestamped):
         elif Coupon.objects.filter(code__iexact=self.code).exclude(pk=self.pk).exists():
             errors['code'] = 'Another coupon already uses this code.'
         if bool(self.percent_basis_points) == bool(self.fixed_amount):
-            errors['percent_basis_points'] = 'Set either a percentage or a fixed amount off, not both.'
+            unchanged_legacy_discount = False
+            if self.pk:
+                previous = Coupon.objects.filter(pk=self.pk).values(
+                    'percent_basis_points', 'fixed_amount'
+                ).first()
+                unchanged_legacy_discount = previous is not None and (
+                    previous['percent_basis_points'] == self.percent_basis_points
+                    and previous['fixed_amount'] == self.fixed_amount
+                )
+            if not unchanged_legacy_discount:
+                errors['percent_basis_points'] = 'Set either a percentage or a fixed amount off, not both.'
         if self.valid_from and self.valid_until and self.valid_until <= self.valid_from:
             errors['valid_until'] = 'The end date must be after the start date.'
         if errors:

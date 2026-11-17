@@ -26,16 +26,17 @@ from bookings.models import Booking, BookingParticipant, CheckoutOrder
 from bookings.services import BookingError, grant_departure_exception
 from core.models import AuditLog, DataAccessLog
 from core.security import get_client_ip
+from core.services import ensure_default_settings
 from django.conf import settings
 from core.models import Setting
-from payments.models import BusinessEntity, GstConfiguration, Payment, PaymentKind, Refund
+from payments.models import BusinessEntity, GstConfiguration, Payment, PaymentGatewayEvent, PaymentKind, Refund
 from payments import services as payment_services
 from content.models import ContentStatus, Destination
 from operations.models import SafetyWaiver
-from trips.models import Event, EventRegistration, Trip, TripSchedule
+from trips.models import Event, EventRegistration, EventSchedule, Trip, TripSchedule
 
 from .permissions import StaffOnly, has_staff_membership, require_staff_perm
-from .registry import MODULE_LABELS, RESOURCES, Resource, get_resource, module_resource_keys
+from .registry import MODULE_LABELS, NOT_IN_USE, RESOURCES, Resource, get_resource, module_resource_keys
 from .serializers import MAX_UPLOAD_MB, resource_serializer, schema_for
 
 
@@ -97,7 +98,7 @@ def _audit(request, action, resource, instance, before=None, after=None):
         actor=request.user,
         action=action,
         entity_type=resource.model._meta.label_lower,
-        entity_id=str(instance.pk),
+        entity_id=str(instance.pk) if instance is not None else '',
         before=before,
         after=after,
         ip=ip,
@@ -183,6 +184,13 @@ def _is_storage_error(exc):
         return isinstance(exc, OSError)
 
 
+def _message(exc):
+    """A readable sentence from a BookingError or a Django ValidationError (which str() renders as a list or dict)."""
+    if isinstance(exc, DjangoValidationError):
+        return ' '.join(exc.messages)
+    return str(exc)
+
+
 def _serializer_error(exc):
     return Response({'detail': str(exc)}, status=status.HTTP_409_CONFLICT)
 
@@ -228,6 +236,8 @@ class AdminModuleCatalogView(APIView):
         for key, label in MODULE_LABELS.items():
             resources = []
             for resource_key in module_resource_keys(key):
+                if resource_key in NOT_IN_USE:
+                    continue
                 resource = RESOURCES[resource_key]
                 actions = {
                     'view': _can(request.user, resource, 'view'),
@@ -266,6 +276,8 @@ class AdminResourceCollectionView(UploadAwareView):
     def get(self, request, resource_key):
         resource = _resolve(resource_key)
         _require_model_permission(request, resource, 'view')
+        if resource.key == 'settings':
+            ensure_default_settings()   # a setting added in code appears here without a seed run (the list can't add rows)
         qs = _filter_queryset(request, resource, _queryset(resource, request.user, request.tenant))
         page = self.paginator.paginate_queryset(qs, request, view=self)
         _access_log(request, resource, purpose='staff list view')
@@ -359,33 +371,27 @@ class AdminResourceDetailView(UploadAwareView):
 class StaffActionView(APIView):
     permission_classes = [StaffOnly]
 
+    HANDLERS = {
+        'verify-payment': '_verify_payment', 'approve-refund': '_approve_refund', 'reject-refund': '_reject_refund',
+        'record-manual-payment': '_record_manual_payment', 'departure-exception': '_departure_exception',
+        'content-transition': '_content_transition', 'participant-check-in': '_participant_check_in',
+        'cancel-booking': '_cancel_booking', 'cancel-date': '_cancel_date', 'event-check-in': '_event_check_in',
+        'record-event-refund': '_record_event_refund', 'retry-webhook': '_retry_webhook',
+        'resend-notifications': '_resend_notifications',
+    }
+
     def post(self, request, action):
+        handler = self.HANDLERS.get(action)
+        if handler is None:
+            return Response({'detail': 'Unknown staff action.'}, status=status.HTTP_404_NOT_FOUND)
         try:
-            if action == 'verify-payment':
-                return self._verify_payment(request)
-            if action == 'approve-refund':
-                return self._approve_refund(request)
-            if action == 'record-manual-payment':
-                return self._record_manual_payment(request)
-            if action == 'departure-exception':
-                return self._departure_exception(request)
-            if action == 'content-transition':
-                return self._content_transition(request)
-            if action == 'participant-check-in':
-                return self._participant_check_in(request)
-            if action == 'cancel-booking':
-                return self._cancel_booking(request)
-            if action == 'event-check-in':
-                return self._event_check_in(request)
-            if action == 'record-event-refund':
-                return self._record_event_refund(request)
+            return getattr(self, handler)(request)
         except (BookingError, DjangoValidationError) as exc:
-            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'detail': _message(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except IntegrityError as exc:
             return _serializer_error(exc)
         except ObjectDoesNotExist:
             raise Http404('Record not found.')
-        return Response({'detail': 'Unknown staff action.'}, status=status.HTTP_404_NOT_FOUND)
 
     def _verify_payment(self, request):
         resource = _resolve('payments')
@@ -403,6 +409,66 @@ class StaffActionView(APIView):
         payment_services.approve_refund(request.user, refund, request)
         _audit(request, 'refunds.approve', resource, refund, before=before, after=_serialize(resource, refund, request))
         return Response(_serialize(resource, refund, request))
+
+    def _reject_refund(self, request):
+        resource = _resolve('refunds')
+        require_staff_perm(request, 'payments.change_refund', 'You do not have permission to reject refunds.')
+        refund = Refund.objects.get(pk=request.data.get('refund_id'))
+        before = _serialize(resource, refund, request)
+        payment_services.reject_refund(request.user, refund, str(request.data.get('reason', '')), request)
+        _audit(request, 'refunds.reject', resource, refund, before=before, after=_serialize(resource, refund, request))
+        return Response(_serialize(resource, refund, request))
+
+    def _retry_webhook(self, request):
+        """Run a stored Razorpay event again after the fault that stopped it is fixed (it was authenticated on arrival)."""
+        require_staff_perm(request, 'payments.change_payment', 'You do not have permission to retry payment events.')
+        event = PaymentGatewayEvent.objects.get(pk=request.data.get('event_id'))
+        try:
+            outcome = payment_services.retry_webhook_event(event.event_id)
+        except BookingError:
+            raise
+        except Exception as exc:   # noqa: BLE001 - the error is stored on the event; show it to the staff member
+            return Response({'detail': f'It failed again: {str(exc)[:200]}'}, status=status.HTTP_409_CONFLICT)
+        _audit(request, 'gateway-events.retry', _resolve('gateway-events'), event, after={'outcome': outcome})
+        return Response({'outcome': outcome})
+
+    def _resend_notifications(self, request):
+        """Queue skipped or failed messages again, e.g. after a WhatsApp template name was filled in.
+
+        `job_ids` resends those jobs; without it, every skipped or failed message from the last two days is resent
+        (older reminders would arrive too late to help). Login codes are never resent: they expire within minutes.
+        """
+        from notifications.models import NotificationEvent, NotificationJob
+        from notifications.tasks import deliver
+        require_staff_perm(request, 'notifications.change_notificationjob', 'You do not have permission to resend messages.')
+        jobs = NotificationJob.objects.filter(status__in=(NotificationJob.Status.SKIPPED, NotificationJob.Status.FAILED)).exclude(event=NotificationEvent.OTP)
+        ids = request.data.get('job_ids')
+        jobs = jobs.filter(pk__in=ids) if ids else jobs.filter(created_at__gte=timezone.now() - timedelta(days=2))
+        job_ids = [str(pk) for pk in jobs.values_list('pk', flat=True)[:500]]
+        NotificationJob.objects.filter(pk__in=job_ids).update(status=NotificationJob.Status.QUEUED)
+        tenant_id = str(request.tenant.pk)
+        transaction.on_commit(lambda: [deliver.delay(job_id, tenant_id) for job_id in job_ids])
+        _audit(request, 'notification-jobs.resend', _resolve('notification-jobs'), None, after={'jobs': len(job_ids)})
+        return Response({'queued': len(job_ids)})
+
+    def _cancel_date(self, request):
+        """Cancel a whole trip departure or event date: every active booking, with one reason and the chosen refund rule."""
+        from bookings.services import cancel_trip_date
+        from trips.event_booking import cancel_event_date
+        reason = str(request.data.get('reason', '')).strip()[:255]
+        if not reason:
+            raise serializers.ValidationError({'reason': 'Say why the date is cancelled; customers see it.'})
+        full_refund = request.data.get('refund', 'full') != 'policy'
+        if request.data.get('kind') == 'event':
+            require_staff_perm(request, 'trips.change_eventregistration', 'You do not have permission to cancel event bookings.')
+            schedule = EventSchedule.objects.get(pk=request.data.get('schedule_id'))
+            cancelled = cancel_event_date(schedule, request.user, reason, full_refund=full_refund)
+        else:
+            require_staff_perm(request, 'bookings.change_booking', 'You do not have permission to cancel bookings.')
+            require_staff_perm(request, 'trips.change_tripschedule', 'You do not have permission to change trip dates.')
+            schedule = TripSchedule.objects.get(pk=request.data.get('schedule_id'))
+            cancelled = cancel_trip_date(schedule, request.user, reason, full_refund=full_refund, request=request)
+        return Response({'cancelled': len(cancelled)})
 
     def _record_event_refund(self, request):
         """Staff paid an event refund back by UPI (or decided not to): record it. SENT tells the customer on WhatsApp."""

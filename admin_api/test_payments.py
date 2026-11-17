@@ -1,10 +1,11 @@
 """Payments page: verifying manual payments, refunds, the money summary, date filter, duplicate UPI refs and CSV export."""
 from decimal import Decimal
 
-from django.contrib.auth.models import Permission
+from django.contrib.auth.models import Group, Permission
 from rest_framework.test import APIClient
 
 from core.testing import TenantTestCase, make_user
+from tenancy.models import TenantMembership
 
 from .tests import _AdminFixtures
 
@@ -13,10 +14,16 @@ ACTION = '/api/v1/admin/actions/{}/'
 
 
 def staff_with(phone, *codenames, superuser=False):
-    """A staff member of this operator holding exactly these permissions (e.g. 'view_payment')."""
+    """A staff member of this operator whose role holds exactly these permissions (e.g. 'view_payment').
+
+    Permissions come from the role on the operator membership (accounts.backends.TenantRoleBackend), so the test
+    makes a one-off role group for this person rather than granting permissions on the user.
+    """
     user = make_user(phone, is_staff=True, is_superuser=superuser, full_name=f'Staff {phone[-4:]}')
     if codenames:
-        user.user_permissions.add(*Permission.objects.filter(codename__in=codenames))
+        role = Group.objects.create(name=f'Test role {phone}')
+        role.permissions.add(*Permission.objects.filter(codename__in=codenames))
+        TenantMembership.objects.filter(user=user).update(staff_role=role.name)
     client = APIClient()
     client.force_authenticate(user)
     return user, client

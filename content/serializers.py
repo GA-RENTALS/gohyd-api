@@ -34,7 +34,7 @@ class DestinationSerializer(serializers.ModelSerializer):
     def _lang(self): return self.context.get('lang', 'en')
     def get_name(self, o): return pick(o, self._lang(), 'title')
     def get_summary(self, o): return pick(o, self._lang(), 'summary')
-    def get_body(self, o): return pick(o, self._lang(), 'body')
+    def get_body(self, o): return clean_html(pick(o, self._lang(), 'body'))
     def get_seo(self, o): return {'title': pick(o, self._lang(), 'seo_title'), 'description': pick(o, self._lang(), 'seo_description')}
     def get_cover_url(self, o):
         if not o.cover_id or not o.cover.file:
@@ -78,13 +78,17 @@ class CmsPageSerializer(serializers.ModelSerializer):
     title = serializers.SerializerMethodField()
     body = serializers.SerializerMethodField()
     blocks = serializers.SerializerMethodField()
+    seo = serializers.SerializerMethodField()
 
     class Meta:
         model = m.CmsPage
-        fields = ('slug', 'kind', 'title', 'body', 'blocks')
+        fields = ('slug', 'kind', 'title', 'body', 'blocks', 'seo')
 
     def get_title(self, o): return pick(o, self.context.get('lang', 'en'), 'title')
-    def get_body(self, o): return pick(o, self.context.get('lang', 'en'), 'body')
+    def get_body(self, o): return clean_html(pick(o, self.context.get('lang', 'en'), 'body'))
+    def get_seo(self, o):
+        lang = self.context.get('lang', 'en')
+        return {'title': pick(o, lang, 'seo_title'), 'description': pick(o, lang, 'seo_description') or pick(o, lang, 'summary')}
     def get_blocks(self, o):
         lang = self.context.get('lang', 'en')
         rows = visible_translations(o)

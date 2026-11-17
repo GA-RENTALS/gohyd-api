@@ -7,6 +7,8 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 
+from .roles import STAFF_ROLE_CHOICES
+
 
 class Tenant(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -72,6 +74,8 @@ class TenantMembership(models.Model):
     tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name='memberships')
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='tenant_memberships')
     role = models.CharField(max_length=20, choices=Role.choices, default=Role.CUSTOMER)
+    # db_default too: code deployed before this field existed inserts memberships without it (e.g. at customer sign-up).
+    staff_role = models.CharField(max_length=80, choices=STAFF_ROLE_CHOICES, blank=True, default='', db_default='')
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(default=timezone.now, editable=False)
 

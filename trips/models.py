@@ -8,6 +8,7 @@ from simple_history.models import HistoricalRecords
 
 from content.models import Destination, MediaAsset, Publishable, TranslationBase
 from core.models import TenantBound, Timestamped, UUIDModel
+from core.storage import private_storage
 
 
 class TripCategory(Timestamped):
@@ -109,6 +110,7 @@ class TripSchedule(UUIDModel, Timestamped):
     price_per_participant = models.DecimalField(max_digits=12, decimal_places=2, validators=[MinValueValidator(0)])
     currency = models.CharField(max_length=3, default='INR')
     is_open = models.BooleanField(default=True, help_text='Operational switch; independent of editorial publishing.')
+    cancelled_at = models.DateTimeField(null=True, blank=True, help_text='The operator cancelled this departure (bookings.services.cancel_trip_date).')
     balance_due_days_before = models.PositiveSmallIntegerField(null=True, blank=True, help_text='Overrides trip and global value.')
     advance_basis_points = models.PositiveSmallIntegerField(null=True, blank=True, validators=[MaxValueValidator(10000)])
 
@@ -500,6 +502,7 @@ class EventSchedule(UUIDModel):
     capacity = models.PositiveIntegerField(null=True, blank=True)
     is_date_locked = models.BooleanField(default=False)
     time_tbd = models.BooleanField(default=False)
+    cancelled_at = models.DateTimeField(null=True, blank=True, help_text='The operator cancelled this date (trips.event_booking.cancel_event_date).')
 
     class Meta:
         db_table = 'event_schedules'
@@ -598,7 +601,7 @@ class EventRegistration(UUIDModel, Timestamped):
     staff_note = models.TextField(blank=True)
     confirmed_at = models.DateTimeField(null=True, blank=True, editable=False)
     cancelled_at = models.DateTimeField(null=True, blank=True, editable=False)
-    payment_screenshot = models.ImageField(upload_to=_payment_screenshot_path, blank=True,
+    payment_screenshot = models.ImageField(upload_to=_payment_screenshot_path, storage=private_storage, blank=True,
                                            help_text='UPI payment screenshot uploaded by the customer. Check it before confirming.')
     payment_utr = models.CharField('UPI transaction ID', max_length=40, blank=True,
                                    help_text='UTR / transaction ID the customer typed (optional).')

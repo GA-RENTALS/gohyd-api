@@ -13,10 +13,8 @@ TEAM = '/api/v1/admin/team/'
 
 def tenant_admin(phone):
     """A non-superuser admin of this operator (TENANT_ADMIN membership + the Admin role)."""
-    from django.contrib.auth.models import Group
     user = make_user(phone, is_staff=True, full_name=f'Admin {phone[-4:]}')
-    TenantMembership.objects.filter(user=user).update(role=TenantMembership.Role.TENANT_ADMIN)
-    user.groups.add(Group.objects.get(name='Admin'))
+    TenantMembership.objects.filter(user=user).update(role=TenantMembership.Role.TENANT_ADMIN, staff_role='Admin')
     client = APIClient()
     client.force_authenticate(user)
     return user, client
@@ -104,8 +102,10 @@ class TeamPageTests(_AdminFixtures, TenantTestCase):
         person_id = self._invite(self.client_).data['id']
         res = self.client_.patch(f'{TEAM}{person_id}/', {'role': 'Booking Manager'}, format='json')
         self.assertEqual(res.status_code, 200, res.data)
-        from accounts.models import User
-        self.assertEqual(list(User.objects.get(pk=person_id).groups.values_list('name', flat=True)), ['Booking Manager'])
+        # The role belongs to this operator's membership, never to the person's global groups.
+        membership = TenantMembership.objects.get(user_id=person_id)
+        self.assertEqual(membership.staff_role, 'Booking Manager')
+        self.assertFalse(membership.user.groups.exists())
 
     def test_nobody_can_change_their_own_access(self):
         user, admin = tenant_admin('+919877777777')

@@ -49,7 +49,7 @@ class TenantDomainAdmin(admin.ModelAdmin):
 
 @admin.register(TenantMembership)
 class TenantMembershipAdmin(admin.ModelAdmin):
-    list_display = ('user', 'tenant', 'role', 'is_active')
+    list_display = ('user', 'tenant', 'role', 'staff_role', 'is_active')
     list_filter = ('tenant', 'role', 'is_active')
     search_fields = ('user__phone_number', 'user__email', 'tenant__name')
     readonly_fields = ('created_at',)
@@ -84,9 +84,18 @@ class TenantMembershipAdmin(admin.ModelAdmin):
         form = super().get_form(request, obj, **kwargs)
         if not request.user.is_superuser and 'tenant' in form.base_fields:
             form.base_fields.pop('tenant')
+        if not request.user.is_superuser and 'staff_role' in form.base_fields:
+            form.base_fields['staff_role'].choices = [
+                choice for choice in form.base_fields['staff_role'].choices if choice[0] != 'Super Admin'
+            ]
         return form
 
     def save_model(self, request, obj, form, change):
         if not request.user.is_superuser:
             obj.tenant = request.tenant
+        if obj.role in (TenantMembership.Role.STAFF, TenantMembership.Role.TENANT_ADMIN):
+            obj.role = (TenantMembership.Role.TENANT_ADMIN
+                        if obj.staff_role in {'Super Admin', 'Admin'} else TenantMembership.Role.STAFF)
+        else:
+            obj.staff_role = ''
         super().save_model(request, obj, form, change)

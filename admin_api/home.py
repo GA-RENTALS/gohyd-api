@@ -15,8 +15,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from bookings.models import Booking
-from content.models import Blog
-from crm.models import Enquiry
+from content.models import Blog, CmsPage, Destination
+from crm.models import CorporateEnquiry, Enquiry
 from payments.models import Payment, PaymentAllocation
 from trips.models import Event, EventRegistration, EventSchedule, Trip, TripSchedule
 
@@ -127,11 +127,20 @@ class HomeView(APIView):
             soon = Booking.objects.filter(status__in=TRIP_AWAITING, schedule__starts_at__gte=now, schedule__starts_at__lt=now + timedelta(days=14)).select_related('primary_booker', 'schedule').order_by('schedule__starts_at')
             rows = [r for r in trip_booking_rows(list(soon[:30]), title_map(Trip, {b.schedule.trip_id for b in soon[:30]})) if Decimal(r['due']) > 0]
             todo['balance_due'] = {'count': len(rows), 'items': rows[:5]}
-        if _can(request, 'enquiries'):
-            qs = Enquiry.objects.filter(status=Enquiry.Status.NEW).order_by('-created_at')
-            todo['enquiries'] = {'count': qs.count(), 'items': [{
-                'id': str(e.pk), 'name': e.name, 'phone': e.phone, 'message': (e.message or '')[:160], 'created_at': _iso(e.created_at),
-            } for e in qs[:5]]}
+        if _can(request, 'enquiries') or _can(request, 'corporate-enquiries'):
+            ordinary = (Enquiry.objects.filter(status=Enquiry.Status.NEW).order_by('-created_at')
+                        if _can(request, 'enquiries') else Enquiry.objects.none())
+            corporate = (CorporateEnquiry.objects.filter(status=CorporateEnquiry.Status.NEW).order_by('-created_at')
+                         if _can(request, 'corporate-enquiries') else CorporateEnquiry.objects.none())
+            items = [{
+                'id': str(e.pk), 'type': 'ordinary', 'name': e.name, 'phone': e.phone,
+                'message': (e.message or '')[:160], 'created_at': _iso(e.created_at),
+            } for e in ordinary[:5]] + [{
+                'id': str(e.pk), 'type': 'corporate', 'name': e.contact_name, 'phone': e.phone,
+                'message': f'{e.company} · {e.group_size or "Group"} people · {e.brief}'[:160], 'created_at': _iso(e.created_at),
+            } for e in corporate[:5]]
+            items = sorted(items, key=lambda row: row['created_at'], reverse=True)[:5]
+            todo['enquiries'] = {'count': ordinary.count() + corporate.count(), 'items': items}
 
         # ---- charts ----
         start = today - timedelta(days=29)
@@ -208,8 +217,12 @@ class CountsView(APIView):
             out['payments'] = Payment.objects.filter(status=Payment.Status.PENDING_VERIFICATION).count()
         if _can(request, 'event-registrations'):
             out['event_bookings'] = EventRegistration.objects.filter(event_status_q('awaiting', now)).count()
-        if _can(request, 'enquiries'):
-            out['enquiries'] = Enquiry.objects.filter(status=Enquiry.Status.NEW).count()
+        if _can(request, 'enquiries') or _can(request, 'corporate-enquiries'):
+            out['enquiries'] = (
+                (Enquiry.objects.filter(status=Enquiry.Status.NEW).count() if _can(request, 'enquiries') else 0)
+                + (CorporateEnquiry.objects.filter(status=CorporateEnquiry.Status.NEW).count()
+                   if _can(request, 'corporate-enquiries') else 0)
+            )
         return Response(out)
 
 
@@ -276,10 +289,14 @@ class SearchView(APIView):
             events = list(Event.objects.filter(Q(slug__icontains=q) | Q(translations__title__icontains=q)).distinct()[:5])
             titles = title_map(Event, [e.pk for e in events])
             out += [{'type': 'Event', 'label': titles.get(e.pk, e.slug), 'sub': e.get_status_display(), 'href': f'/admin/overview/event/{e.pk}'} for e in events]
-        if _can(request, 'blogs'):
-            posts = list(Blog.objects.filter(Q(slug__icontains=q) | Q(translations__title__icontains=q)).distinct()[:5])
-            titles = title_map(Blog, [p.pk for p in posts])
-            out += [{'type': 'Blog post', 'label': titles.get(p.pk, p.slug), 'sub': p.get_status_display(), 'href': f'/admin/overview/blog/{p.pk}'} for p in posts]
+        for resource, model, label, path in (('blogs', Blog, 'Blog post', 'blog'), ('destinations', Destination, 'Destination', 'destination'),
+                                             ('cms-pages', CmsPage, 'Website page', 'page')):
+            if not _can(request, resource):
+                continue
+            items = list(model.objects.filter(Q(slug__icontains=q) | Q(translations__title__icontains=q)).distinct()[:5])
+            titles = title_map(model, [i.pk for i in items])
+            out += [{'type': label, 'label': titles.get(i.pk, i.slug), 'sub': i.get_status_display(), 'href': f'/admin/overview/{path}/{i.pk}'}
+                    for i in items]
         if _can(request, 'bookings'):
             for b in Booking.objects.filter(Q(reference__icontains=q) | Q(primary_booker__phone_number__icontains=q) | Q(primary_booker__full_name__icontains=q)).select_related('primary_booker', 'schedule')[:5]:
                 out.append({'type': 'Trip booking', 'label': f'{b.reference} · {b.primary_booker.full_name or b.primary_booker.phone_number}',

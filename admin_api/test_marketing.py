@@ -27,6 +27,39 @@ class CouponRuleTests(_AdminFixtures, TenantTestCase):
         self.assertEqual((both.status_code, neither.status_code), (400, 400))
         self.assertIn('percent_basis_points', both.data)
 
+    def test_edit_can_switch_between_percentage_and_fixed_discount(self):
+        created = self.client_.post(COUPONS, {'code': 'SWITCH', 'percent_basis_points': 1000}, format='json')
+        self.assertEqual(created.status_code, 201, created.data)
+        url = f"{COUPONS}{created.data['id']}/"
+
+        fixed = self.client_.patch(url, {'percent_basis_points': None, 'fixed_amount': '200.00'}, format='json')
+        self.assertEqual(fixed.status_code, 200, fixed.data)
+        self.assertIsNone(fixed.data['percent_basis_points'])
+        self.assertEqual(fixed.data['fixed_amount'], '200.00')
+
+        percent = self.client_.patch(url, {'percent_basis_points': 1500, 'fixed_amount': None}, format='json')
+        self.assertEqual(percent.status_code, 200, percent.data)
+        self.assertEqual(percent.data['percent_basis_points'], 1500)
+        self.assertIsNone(percent.data['fixed_amount'])
+
+    def test_unrelated_update_allows_legacy_invalid_discount_to_be_repaired(self):
+        from crm.models import Coupon
+
+        coupon = Coupon.objects.create(code='LEGACY', percent_basis_points=1000, fixed_amount=Decimal('200.00'))
+        url = f'{COUPONS}{coupon.pk}/'
+
+        paused = self.client_.patch(url, {'is_active': False}, format='json')
+        self.assertEqual(paused.status_code, 200, paused.data)
+
+        invalid_change = self.client_.patch(url, {'percent_basis_points': 1500}, format='json')
+        self.assertEqual(invalid_change.status_code, 400)
+        self.assertIn('percent_basis_points', invalid_change.data)
+
+        repaired = self.client_.patch(url, {'percent_basis_points': None, 'fixed_amount': '200.00'}, format='json')
+        self.assertEqual(repaired.status_code, 200, repaired.data)
+        self.assertIsNone(repaired.data['percent_basis_points'])
+        self.assertEqual(repaired.data['fixed_amount'], '200.00')
+
     def test_codes_are_unique_ignoring_case(self):
         self.client_.post(COUPONS, {'code': 'SUMMER', 'fixed_amount': '100.00'}, format='json')
         again = self.client_.post(COUPONS, {'code': 'summer', 'fixed_amount': '100.00'}, format='json')

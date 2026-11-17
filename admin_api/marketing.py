@@ -58,6 +58,8 @@ class MarketingListView(APIView):
         out = {'create': _can(request, key, 'add'), 'update': _can(request, key, 'change')}
         if tab == 'campaigns':
             out['add_cost'] = _can(request, 'campaign-costs', 'add')
+        if tab == 'subscribers':
+            out['delete'] = _can(request, key, 'delete')
         out['tabs'] = [name for name, resource in TABS.items() if _can(request, resource)]
         return out
 

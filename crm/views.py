@@ -56,7 +56,7 @@ class EnquiryView(APIView):
     permission_classes = [permissions.AllowAny]
     authentication_classes = []
     throttle_classes = [TrustedScopedRateThrottle]
-    throttle_scope = 'enquiry'
+    throttle_scope = 'contact_enquiry'
 
     @extend_schema(tags=['CRM'], request=EnquirySerializer)
     def post(self, request):
@@ -70,7 +70,7 @@ class CorporateEnquiryView(APIView):
     permission_classes = [permissions.AllowAny]
     authentication_classes = []
     throttle_classes = [TrustedScopedRateThrottle]
-    throttle_scope = 'enquiry'
+    throttle_scope = 'corporate_enquiry'
 
     @extend_schema(tags=['CRM'], request=CorporateEnquirySerializer)
     def post(self, request):
@@ -97,7 +97,7 @@ class NewsletterSubscribeView(APIView):
     permission_classes = [permissions.AllowAny]
     authentication_classes = []
     throttle_classes = [TrustedScopedRateThrottle]
-    throttle_scope = 'enquiry'
+    throttle_scope = 'newsletter_signup'
 
     @extend_schema(tags=['CRM'], request=NewsletterSubscribeSerializer)
     def post(self, request):

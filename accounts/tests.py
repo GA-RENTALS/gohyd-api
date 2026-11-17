@@ -2,7 +2,7 @@ from datetime import timedelta
 from unittest import mock
 
 from django.core.cache import cache
-from core.testing import TenantTestCase
+from core.testing import TenantTestCase, make_user
 from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -101,3 +101,36 @@ class DevelopmentOtpSendingTests(TenantTestCase):
             r = self.request()
         self.assertEqual(r.status_code, 200)
         self.assertIn('Development sign-in code', logs.output[0])
+
+
+class PrivacyRightsTests(TenantTestCase):
+    """A customer can download their data and ask for their account to be deleted (NEXT.md item 29)."""
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+        self.user = make_user('+919833333333', full_name='Meena Rao', email='meena@example.com')
+        self.client_ = APIClient()
+        self.client_.force_authenticate(self.user)
+
+    def test_download_contains_the_account_and_is_recorded(self):
+        import json
+        from core.models import DataRequest
+        res = self.client_.get('/api/v1/me/data-export/')
+        self.assertEqual(res.status_code, 200)
+        self.assertIn('attachment', res['Content-Disposition'])
+        data = json.loads(res.content)
+        self.assertEqual(data['account']['full_name'], 'Meena Rao')
+        self.assertEqual(data['trip_bookings'], [])
+        self.assertTrue(DataRequest.objects.filter(user=self.user, kind='EXPORT', status='COMPLETED').exists())
+
+    def test_asking_for_deletion_twice_keeps_one_open_request(self):
+        from core.models import DataRequest
+        first = self.client_.post('/api/v1/me/data-requests/', {'reason': 'Moving away'}, format='json')
+        again = self.client_.post('/api/v1/me/data-requests/', {}, format='json')
+        self.assertEqual((first.status_code, again.status_code), (201, 200))
+        self.assertEqual(DataRequest.objects.filter(user=self.user, kind='DELETION').count(), 1)
+        self.assertEqual(again.data['results'][0]['status'], 'REQUESTED')
+
+    def test_signed_out_visitors_get_nothing(self):
+        from rest_framework.test import APIClient
+        self.assertEqual(APIClient().get('/api/v1/me/data-export/').status_code, 401)

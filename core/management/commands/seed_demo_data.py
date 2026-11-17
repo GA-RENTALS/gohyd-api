@@ -9,7 +9,6 @@ import io
 import uuid
 from datetime import timedelta
 
-from django.contrib.auth.models import Group
 from django.core.management.base import BaseCommand, CommandError
 from django.conf import settings
 from django.core.files.base import ContentFile
@@ -72,7 +71,9 @@ class Command(BaseCommand):
             raise CommandError('Create a superuser first (python manage.py createsuperuser).')
 
         finance = self.user(FINANCE_PHONE, 'Demo Finance Manager', 'demo.finance@example.com', staff=True)
-        finance.groups.add(*Group.objects.filter(name='Finance Manager'))
+        membership = TenantMembership.objects.get(tenant=self.tenant, user=finance)
+        membership.staff_role = 'Finance Manager'
+        membership.save(update_fields=['staff_role'])
         customer = self.user(CUSTOMER_PHONE, 'Demo Customer', 'demo.customer@example.com', staff=False)
         CustomerProfile.objects.get_or_create(user=customer, tenant=self.tenant)
 

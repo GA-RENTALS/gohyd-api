@@ -42,7 +42,7 @@ def create_event_booking(*, event_slug, schedule_id, name, phone, participant_co
             schedule = EventSchedule.objects.select_for_update().get(pk=schedule_id, event=event)
         except (EventSchedule.DoesNotExist, ValueError, ValidationError):
             raise ValidationError({'schedule': 'Choose a date belonging to this event.'})
-        if schedule.has_started():
+        if schedule.has_started() or schedule.cancelled_at:
             raise ValidationError({'schedule': 'Bookings for this date have closed.'})
 
         booking = EventRegistration(
@@ -97,6 +97,32 @@ def cancel_event_booking(booking, *, reason=''):
         booking.cancel_reason = (reason or '').strip()[:255]
         booking.save()
     return booking
+
+
+def cancel_event_date(schedule, actor, reason, full_refund=True):
+    """The operator cancels a whole event date: no new bookings, and every pending or confirmed booking is cancelled with
+    one reason. Paid bookings get a refund recorded as due (everything by default, or the event policy's share), and each
+    customer gets the cancellation message (EventRegistration.save). Returns the cancelled bookings."""
+    from core.services import audit
+    with transaction.atomic():
+        schedule = EventSchedule.objects.select_for_update().get(pk=schedule.pk)
+        if schedule.cancelled_at:
+            raise ValidationError({'detail': 'This date has already been cancelled.'})
+        if schedule.has_started():
+            raise ValidationError({'detail': 'This date has already started. Change its bookings one by one instead.'})
+        bookings = list(EventRegistration.objects.select_for_update().filter(
+            schedule=schedule, status__in=(EventRegistration.Status.PENDING, EventRegistration.Status.CONFIRMED)))
+        for booking in bookings:
+            # None = everything paid (see EventRegistration._refund_due); otherwise the share the policy gives now.
+            booking._refund_basis_points = None if full_refund else booking.refund_quote()[0]
+            booking.status = EventRegistration.Status.CANCELLED
+            booking.cancel_reason = reason[:255]
+            booking.save()
+        schedule.cancelled_at = timezone.now()
+        schedule.save(update_fields=['cancelled_at'])
+        audit(actor, 'event_schedule.cancel', schedule, schedule.pk,
+              after={'reason': reason, 'bookings': len(bookings), 'full_refund': full_refund})
+    return bookings
 
 
 PAYMENT_SCREENSHOT_MAX_BYTES = 5 * 1024 * 1024

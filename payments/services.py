@@ -1,12 +1,14 @@
 """Payment orchestration. The browser is never trusted for payment status: success comes from a verified signature or webhook."""
 import logging
+from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 
-from django.db import IntegrityError, transaction
+from django.db import transaction
 from django.utils import timezone
 
 from bookings.models import Booking, CheckoutOrder
-from bookings.services import BookingError, checkout_status, outstanding, paid_amount, refresh_booking_status
+from bookings.services import (BookingError, checkout_hold_minutes, checkout_status, outstanding, paid_amount,
+                               refresh_booking_status)
 from core.models import SecurityEvent
 from core.services import audit, emit
 
@@ -39,12 +41,19 @@ def amounts_due(bookings, kind):
 
 @transaction.atomic
 def start_online_payment(user, checkout: CheckoutOrder, kind: str, idempotency_key: str, booking_ids=None):
-    """Create (or replay) a gateway order covering one or several bookings of a checkout."""
+    """Create (or replay) a gateway order covering one or several bookings of a checkout.
+
+    A second request for the same amount (another tab, a retry after a lost confirmation) gets the order that is still
+    open instead of a new one, so the customer can't be charged twice for one balance. Should two orders settle anyway,
+    `mark_succeeded` allocates only what is still due and requests a refund for the rest.
+    """
     existing = Payment.objects.filter(idempotency_key=idempotency_key).first()
     if existing:
         if existing.payer_id != user.pk:
             raise BookingError('Idempotency key already used.', 'idempotency_conflict')
         return existing
+    # One payment start per checkout at a time: a concurrent request waits here, then sees the order this one made.
+    checkout = CheckoutOrder.objects.select_for_update().get(pk=checkout.pk)
     if checkout.status == CheckoutOrder.Status.EXPIRED:
         raise BookingError('This checkout expired and its seats were released. Please book again from the trip page.',
                            'checkout_expired')
@@ -54,15 +63,28 @@ def start_online_payment(user, checkout: CheckoutOrder, kind: str, idempotency_k
     due = amounts_due(bookings, kind)
     if not due:
         raise BookingError('Nothing is due for these bookings.', 'nothing_due')
+    plan = {str(k): str(v) for k, v in due.items()}
+    reusable = _open_payment_for(checkout, user, kind, plan)
+    if reusable:
+        return reusable
     total = sum(due.values(), Decimal('0.00'))
     p = Payment.objects.create(checkout=checkout, payer=user, kind=kind, method=Payment.Method.RAZORPAY, amount=total,
                                idempotency_key=idempotency_key)
     # stash the allocation plan so webhook/verify can allocate without trusting the client
-    _txn(p, 'created', Payment.Status.CREATED, raw={'plan': {str(k): str(v) for k, v in due.items()}})
+    _txn(p, 'created', Payment.Status.CREATED, raw={'plan': plan})
     order = gateway.create_order(total, receipt=str(p.pk), notes={'payment_id': str(p.pk), 'checkout': checkout.reference})
     p.gateway_order_id = order['id']
     p.save(update_fields=['gateway_order_id', 'updated_at'])
     return p
+
+
+def _open_payment_for(checkout, user, kind, plan):
+    """A gateway order opened within the hold time for exactly this plan, which the customer can still pay."""
+    since = timezone.now() - timedelta(minutes=checkout_hold_minutes())
+    candidates = (Payment.objects.filter(checkout=checkout, payer=user, kind=kind, method=Payment.Method.RAZORPAY,
+                                         status=Payment.Status.CREATED, created_at__gte=since)
+                  .filter(gateway_order_id__gt='').order_by('-created_at'))
+    return next((p for p in candidates if {k: str(v) for k, v in _plan(p).items()} == plan), None)
 
 
 def _plan(payment):
@@ -84,17 +106,26 @@ def mark_succeeded(payment_id, gateway_payment_id=None, raw=None, fee=None):
     p.save()
     _txn(p, 'succeeded', Payment.Status.SUCCEEDED, raw)
     plan = _plan(p) or {}
-    allocated = Decimal('0.00')
+    allocated, overpaid = Decimal('0.00'), {}
     for booking_id, amt in plan.items():
-        PaymentAllocation.objects.create(payment=p, booking_id=booking_id, kind=p.kind, amount=amt)
-        allocated += amt
-    if allocated != p.amount:
+        booking = Booking.objects.select_for_update().get(pk=booking_id)
+        # Allocate only what is still owed: another order for the same balance may have settled first.
+        # A cancelled booking takes the whole amount here and is refunded below (_refund_late_payment).
+        take = amt if booking.status == Booking.Status.CANCELLED else min(amt, outstanding(booking))
+        if take > 0:
+            PaymentAllocation.objects.create(payment=p, booking_id=booking_id, kind=p.kind, amount=take)
+            allocated += take
+        if take < amt:
+            overpaid[booking_id] = amt - take
+    if allocated + sum(overpaid.values(), Decimal('0.00')) != p.amount:
         # never silently mis-allocate: flag for finance
         SecurityEvent.objects.create(kind='payment_allocation_mismatch', detail={'payment': str(p.pk), 'allocated': str(allocated), 'amount': str(p.amount)})
     for booking_id, amt in plan.items():
         booking = refresh_booking_status(Booking.objects.get(pk=booking_id), actor=p.payer)
         if booking.status == Booking.Status.CANCELLED:
             _refund_late_payment(p, booking, amt)
+        elif booking_id in overpaid:
+            _refund_overpayment(p, booking, overpaid[booking_id])
     order = CheckoutOrder.objects.select_for_update().get(pk=p.checkout_id)
     order.status = checkout_status(order)
     order.save(update_fields=['status', 'updated_at'])
@@ -112,6 +143,16 @@ def _refund_late_payment(payment, booking, amount):
                                                                      'amount': str(amount), 'refund': str(refund.pk)})
     emit('refund.requested', refund.pk, {'booking': str(booking.pk)})
     logger.warning('Payment %s arrived for cancelled booking %s; refund %s requested.', payment.pk, booking.reference, refund.pk)
+
+
+def _refund_overpayment(payment, booking, amount):
+    """A second order for the same balance was paid too. Keep the booking as it is and give the extra back."""
+    refund = Refund.objects.create(booking=booking, amount=amount, tax_adjustment=Decimal('0.00'),
+                                   reason='Paid twice for the same amount; the second payment is returned.', requested_by=None)
+    SecurityEvent.objects.create(kind='payment_overpaid', detail={'payment': str(payment.pk), 'booking': booking.reference,
+                                                                 'amount': str(amount), 'refund': str(refund.pk)})
+    emit('refund.requested', refund.pk, {'booking': str(booking.pk)})
+    logger.warning('Payment %s overpaid booking %s by %s; refund %s requested.', payment.pk, booking.reference, amount, refund.pk)
 
 
 @transaction.atomic
@@ -156,6 +197,8 @@ def record_manual_payment(actor, checkout, kind, amount, reference, booking_ids=
 
 @transaction.atomic
 def verify_manual_payment(actor, payment, approve, note='', request=None):
+    # Lock and re-read: an approval and a rejection sent at the same moment must not both pass the pending check.
+    payment = Payment.objects.select_for_update().get(pk=payment.pk)
     if payment.method != Payment.Method.MANUAL or payment.status != Payment.Status.PENDING_VERIFICATION:
         raise BookingError('Only pending manual payments can be verified.', 'not_pending')
     if payment.transactions.filter(raw__entered_by=str(actor.pk)).exists():
@@ -177,20 +220,74 @@ def handle_webhook(raw_body: bytes, signature: str, payload: dict, ip=None):
     if not valid:
         SecurityEvent.objects.create(kind='webhook_bad_signature', ip=ip)
         raise PermissionError('bad signature')
-    try:
-        with transaction.atomic():
-            ev = PaymentGatewayEvent.objects.create(provider='razorpay', event_id=event_id, event_type=payload.get('event', ''),
-                                                    payload=payload, signature_valid=True)
-    except IntegrityError:
-        return 'duplicate'          # same event delivered twice: acknowledge, do nothing
-    try:
-        _dispatch(payload)
-        ev.processed_at = timezone.now(); ev.save(update_fields=['processed_at'])
-    except Exception as exc:        # keep the event stored; Razorpay will retry on non-2xx, so surface it
-        ev.error = str(exc)[:300]; ev.save(update_fields=['error'])
-        logger.exception('webhook processing failed')
-        raise
+    if not event_id:
+        raise ValueError('Razorpay webhook is missing its event id.')
+
+    return _process_webhook_event(event_id, payload)
+
+
+def retry_webhook_event(event_id):
+    """Retry one previously authenticated webhook from the admin inbox."""
+    with transaction.atomic():
+        ev = PaymentGatewayEvent.objects.select_for_update().filter(
+            provider='razorpay', event_id=event_id, signature_valid=True,
+        ).first()
+        if ev is None:
+            raise BookingError('Webhook event not found.', 'not_found')
+        if ev.processed_at:
+            return 'duplicate'
+        payload = ev.payload
+    return _process_webhook_event(event_id, payload)
+
+
+def _process_webhook_event(event_id, payload):
+    processing_error = None
+    with transaction.atomic():
+        ev, _ = PaymentGatewayEvent.objects.select_for_update().get_or_create(
+            provider='razorpay', event_id=event_id,
+            defaults={
+                'event_type': payload.get('event', ''),
+                'payload': payload,
+                'signature_valid': True,
+            },
+        )
+        if ev.processed_at:
+            return 'duplicate'
+
+        # Keep the inbox row/error if dispatch fails, while rolling back any partial business
+        # updates. A provider retry can then safely retry this same, already-authenticated event.
+        try:
+            with transaction.atomic():
+                _dispatch(ev.payload)
+        except Exception as exc:  # retryable: the outer transaction commits the error for observability
+            ev.error = str(exc)[:300]
+            ev.save(update_fields=['error'])
+            logger.exception('webhook processing failed')
+            processing_error = exc
+        else:
+            ev.error = ''
+            ev.processed_at = timezone.now()
+            ev.save(update_fields=['processed_at', 'error'])
+
+    if processing_error:
+        raise processing_error
     return 'processed'
+
+
+def _captured_matches(payment, entity):
+    """The captured amount and currency are the ones this order was created for (`order.paid` may carry no payment)."""
+    if not entity or 'amount' not in entity:
+        return True
+    expected = int(payment.amount * 100)
+    if int(entity['amount']) == expected and entity.get('currency', payment.currency) == payment.currency:
+        return True
+    SecurityEvent.objects.create(kind='payment_amount_mismatch', detail={
+        'payment': str(payment.pk), 'expected_paise': expected, 'captured_paise': entity.get('amount'),
+        'currency': entity.get('currency'),
+    })
+    logger.error('Payment %s captured %s %s, expected %s paise; not recorded.', payment.pk, entity.get('amount'),
+                 entity.get('currency'), expected)
+    return False
 
 
 def _dispatch(payload):
@@ -200,7 +297,7 @@ def _dispatch(payload):
         pay = (ent.get('payment') or {}).get('entity', {})
         order_id = pay.get('order_id') or (ent.get('order') or {}).get('entity', {}).get('id')
         p = Payment.objects.filter(gateway_order_id=order_id).first()
-        if p:
+        if p and _captured_matches(p, pay):
             fee = Decimal(pay.get('fee', 0)) / 100 if pay.get('fee') else None
             mark_succeeded(p.pk, pay.get('id'), raw=pay, fee=fee)
     elif event == 'payment.failed':
@@ -228,6 +325,22 @@ def approve_refund(actor, refund: Refund, request=None):
     refund.save()
     audit(actor, 'refund.approved', refund, refund.pk, after={'amount': str(refund.amount)}, request=request)
     emit('refund.approved', refund.pk, {})
+
+
+@transaction.atomic
+def reject_refund(actor, refund: Refund, reason, request=None):
+    """Finance decides a requested refund is not owed (for example a duplicate request). The reason is kept."""
+    refund = Refund.objects.select_for_update().get(pk=refund.pk)
+    if refund.status != Refund.Status.REQUESTED:
+        raise BookingError('Only a refund awaiting approval can be rejected.', 'not_requested')
+    reason = reason.strip()
+    if not reason:
+        raise BookingError('Give a reason for rejecting this refund.', 'reason_required')
+    refund.status = Refund.Status.REJECTED
+    refund.reason = f'{refund.reason} · Rejected: {reason}'.strip(' ·')[:255]
+    refund.save(update_fields=['status', 'reason', 'updated_at'])
+    audit(actor, 'refund.rejected', refund, refund.pk, after={'reason': reason}, request=request)
+    return refund
 
 
 def process_refund(refund_id):

@@ -1,17 +1,17 @@
-"""Blog posts in the staff admin: add with a title, one page per post, publish / unpublish, safe delete, safe HTML."""
+"""The content editor (blog posts, website pages, destinations): add with a title, one page each, publish, safe delete, safe HTML."""
 from django.test import SimpleTestCase
 from rest_framework.test import APIClient
 
 from content.html import clean_html
-from content.models import Blog, BlogCategory, BlogTag, BlogTranslation, ContentStatus
+from content.models import Blog, BlogCategory, BlogTag, BlogTranslation, CmsPage, ContentStatus, Destination
 from core.models import AuditLog
 from core.testing import TenantTestCase, make_user
 
-CATALOG = '/api/v1/admin/catalog/blogs/'
+CATALOG = '/api/v1/admin/content/blogs/'
 
 
-def overview(pk):
-    return f'/api/v1/admin/overview/blogs/{pk}/'
+def overview(pk, kind='blogs'):
+    return f'/api/v1/admin/content/{kind}/{pk}/'
 
 
 class BlogAdminTests(TenantTestCase):
@@ -136,6 +136,53 @@ class BlogAdminTests(TenantTestCase):
         self.assertEqual(post['category'], {'slug': 'guides', 'name': 'Guides'})
         self.assertEqual(post['tags'], [{'slug': 'treks', 'name': 'Treks'}])
         self.assertIsNone(post['cover_url'])
+
+
+class PageAndDestinationEditorTests(TenantTestCase):
+    """Website pages and destinations use the same editor as blog posts."""
+
+    def setUp(self):
+        self.staff = make_user('+919811111111', is_staff=True, is_superuser=True, full_name='Staff One')
+        self.client_ = APIClient()
+        self.client_.force_authenticate(self.staff)
+
+    def _publish(self, resource, pk):
+        res = self.client_.post('/api/v1/admin/actions/content-transition/', {'resource': resource, 'id': str(pk), 'status': 'PUBLISHED'}, format='json')
+        self.assertEqual(res.status_code, 200, res.data)
+
+    def test_a_policy_page_can_be_added_at_its_fixed_address_and_shows_on_the_website(self):
+        res = self.client_.post('/api/v1/admin/content/pages/', {'title': 'Privacy policy', 'slug': 'privacy'}, format='json')
+        self.assertEqual(res.status_code, 201, res.data)
+        page = CmsPage.objects.get(pk=res.data['id'])
+        self.assertEqual(page.slug, 'privacy')
+        detail = self.client_.get(overview(page.pk, 'pages')).data
+        self.assertTrue(detail['slug_locked'])            # the site links to /privacy, so its address can't change
+        self.assertEqual(detail['public_url'], '/privacy')
+        text = page.translations.get(language='en')
+        self.client_.patch(f'/api/v1/admin/resources/cms-translations/{text.pk}/', {'body': 'We keep your data safe.<script>x</script>'}, format='json')
+        self._publish('cms-pages', page.pk)
+        public = APIClient().get('/api/v1/pages/privacy/')
+        self.assertEqual(public.status_code, 200)
+        self.assertEqual(public.data['body'], '<p>We keep your data safe.</p>')
+
+    def test_an_address_already_in_use_is_refused(self):
+        self.client_.post('/api/v1/admin/content/pages/', {'title': 'Terms', 'slug': 'terms'}, format='json')
+        again = self.client_.post('/api/v1/admin/content/pages/', {'title': 'Terms again', 'slug': 'terms'}, format='json')
+        self.assertEqual(again.status_code, 400)
+        self.assertIn('slug', again.data)
+
+    def test_destinations_are_added_listed_and_safely_deleted(self):
+        res = self.client_.post('/api/v1/admin/content/destinations/', {'title': 'Test Hill Fort'}, format='json')
+        self.assertEqual(res.status_code, 201, res.data)
+        place = Destination.objects.get(pk=res.data['id'])
+        self.assertEqual(place.slug, 'test-hill-fort')
+        cards = self.client_.get('/api/v1/admin/content/destinations/?search=hill fort').data['results']
+        self.assertEqual([c['title'] for c in cards], ['Test Hill Fort'])
+        self._publish('destinations', place.pk)
+        self.assertEqual(self.client_.delete(overview(place.pk, 'destinations')).status_code, 409)
+
+    def test_unknown_kind_is_404(self):
+        self.assertEqual(self.client_.get('/api/v1/admin/content/recipes/').status_code, 404)
 
 
 class CleanHtmlTests(SimpleTestCase):

@@ -1,6 +1,7 @@
 import uuid
 
 from django.core.exceptions import ValidationError as DjValidationError
+from django.db import transaction
 from django.db.models import Prefetch
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -16,7 +17,8 @@ from payments import gateway, services as pay
 from payments.models import Refund
 from . import models as m
 from . import serializers as s
-from .services import BookingError, CheckoutLine, cancel_booking, create_checkout
+from .services import (BookingError, CheckoutLine, cancel_booking, checkout_hold_until, create_checkout,
+                       expire_checkout, refresh_booking_status)
 
 
 def _active_safety_waiver(waiver_id=None):
@@ -152,6 +154,44 @@ class CheckoutViewSet(viewsets.ReadOnlyModelViewSet):
         except BookingError as e:
             return fail(e)
         return Response({'status': p.status})
+
+    @extend_schema(tags=['Checkout'])
+    @action(detail=True, methods=['post'], url_path='complete-free')
+    def complete_free(self, request, pk=None):
+        """Complete a fully discounted checkout after participant details and the current waiver are saved."""
+        order = self.get_object()
+        with transaction.atomic():
+            order = m.CheckoutOrder.objects.select_for_update().get(pk=order.pk, user=request.user)
+            if order.status == m.CheckoutOrder.Status.PAID:
+                return Response(s.CheckoutSerializer(order, context={'request': request}).data)
+            if order.status != m.CheckoutOrder.Status.PENDING or order.total_amount != 0 or order.advance_total != 0:
+                return Response({'status': 'error', 'message': 'This checkout is not eligible for free completion.'}, status=409)
+            hold_until = checkout_hold_until(order)
+            if hold_until and hold_until <= timezone.now():
+                expire_checkout(order)
+                return Response({'status': 'error', 'code': 'checkout_expired', 'message': 'The checkout hold expired.'}, status=409)
+
+            waiver = _active_safety_waiver()
+            if waiver is None:
+                return Response({'status': 'error', 'message': 'The current participation waiver is unavailable.'}, status=503)
+            bookings = list(m.Booking.objects.select_for_update().filter(checkout=order).order_by('pk'))
+            if not bookings:
+                return Response({'status': 'error', 'message': 'This checkout has no bookings.'}, status=409)
+            for booking in bookings:
+                participants = list(booking.participants.all())
+                if (booking.status != m.Booking.Status.PENDING_ADVANCE
+                        or len(participants) != booking.participant_count
+                        or any(not participant.full_name.strip() or not participant.waiver_accepted_at for participant in participants)
+                        or any(not ParticipantWaiverAcceptance.objects.filter(participant=participant, waiver=waiver).exists()
+                               for participant in participants)):
+                    return Response({'status': 'error', 'message': 'Complete every participant and accept the current waiver first.'}, status=400)
+
+            for booking in bookings:
+                refresh_booking_status(booking, actor=request.user)
+            order.status = m.CheckoutOrder.Status.PAID
+            order.save(update_fields=['status', 'updated_at'])
+        order.refresh_from_db()
+        return Response(s.CheckoutSerializer(order, context={'request': request}).data)
 
 
 class BookingViewSet(viewsets.ReadOnlyModelViewSet):

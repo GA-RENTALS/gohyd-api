@@ -112,12 +112,12 @@ def correlated_total(qs, function, field, output):
 # ---------- titles and proofs ----------
 
 def title_map(model, ids):
-    """{id: English title} for trips or events, falling back to the slug."""
+    """{id: English title} for anything with per-language text (trips, events, posts, pages…), falling back to the slug."""
     ids = {i for i in ids if i}
     if not ids:
         return {}
     out = {o.pk: o.slug.replace('-', ' ').title() for o in model.objects.filter(pk__in=ids).only('slug')}
-    fk = f'{model._meta.model_name}_id'
+    fk = f'{model.translations.rel.field.name}_id'   # e.g. trip_id; a CMS page's text points at it as page_id
     rows = model.translations.rel.related_model.objects.filter(**{f'{fk}__in': ids}).values(fk, 'language', 'title')
     best = {}
     for r in rows:
@@ -167,6 +167,7 @@ def trip_booking_rows(bookings, titles):
         'status': b.status, 'status_label': b.get_status_display(), 'bucket': _trip_bucket(b.status),
         'advance_due': _money(ZERO if b.status in TRIP_CANCELLED else max(ZERO, b.advance_amount - paid[b.pk])),
         'checkout_id': str(b.checkout_id), 'created_at': _iso(b.created_at),
+        'departure_exception': bool(b.departure_exception_at),
     } for b in bookings]
 
 

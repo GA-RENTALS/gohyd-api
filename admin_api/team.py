@@ -110,23 +110,23 @@ def role_matrix():
     return out
 
 
-def _role_of(user):
-    return next((g.name for g in user.groups.all() if g.name in ROLES), '')
+def _role_of(membership):
+    return membership.staff_role
 
 
-def _set_role(user, role):
+def _set_role(membership, role):
     group = Group.objects.filter(name=role).first()
     if group is None:
         raise ValidationError({'role': f'The role "{role}" has not been set up yet. Run seed_platform first.'})
-    user.groups.remove(*user.groups.filter(name__in=ROLES))
-    user.groups.add(group)
+    membership.staff_role = role
+    membership.save(update_fields=['staff_role'])
 
 
 # ---------- rows ----------
 
 def _staff(request):
     return (TenantMembership.objects.filter(tenant=request.tenant, role__in=STAFF_ROLES)
-            .select_related('user').prefetch_related('user__groups').order_by('-is_active', 'user__full_name', 'user__phone_number'))
+            .select_related('user').order_by('-is_active', 'user__full_name', 'user__phone_number'))
 
 
 def staff_rows(request, memberships):
@@ -134,7 +134,7 @@ def staff_rows(request, memberships):
                 .values('user_id').annotate(at=Max('created_at')).values_list('user_id', 'at'))
     return [{
         'id': str(m.user_id), 'name': m.user.full_name or m.user.phone_number, 'phone': m.user.phone_number, 'email': m.user.email,
-        'role': _role_of(m.user), 'is_admin': m.role == TenantMembership.Role.TENANT_ADMIN, 'active': m.is_active,
+        'role': _role_of(m), 'is_admin': m.role == TenantMembership.Role.TENANT_ADMIN, 'active': m.is_active,
         'last_sign_in': _iso(last.get(m.user_id)), 'added_at': _iso(m.created_at), 'is_you': m.user_id == request.user.pk,
         'is_superuser': m.user.is_superuser,
     } for m in memberships]
@@ -211,7 +211,7 @@ class TeamView(APIView):
             membership.role = TenantMembership.Role.TENANT_ADMIN if role in ADMIN_ROLES else TenantMembership.Role.STAFF
             membership.is_active = True
             membership.save(update_fields=['role', 'is_active'])
-            _set_role(user, role)
+            _set_role(membership, role)
             _audit(request, 'team.invite', _resolve('staff-memberships'), membership, after={'user': str(user.pk), 'role': role})
         return Response(staff_rows(request, [membership])[0], status=status.HTTP_201_CREATED)
 
@@ -234,19 +234,19 @@ class TeamMemberView(APIView):
         if role is None and active is None:
             raise ValidationError({'detail': 'Send a role or active.'})
 
-        before = {'role': _role_of(membership.user), 'active': membership.is_active, 'admin': membership.role}
+        before = {'role': _role_of(membership), 'active': membership.is_active, 'admin': membership.role}
         with transaction.atomic():
             will_be_admin = (role in ADMIN_ROLES) if role is not None else membership.role == TenantMembership.Role.TENANT_ADMIN
             will_be_active = membership.is_active if active is None else active
             if membership.role == TenantMembership.Role.TENANT_ADMIN and not (will_be_admin and will_be_active):
                 self._keep_one_admin(request, membership)
             if role is not None:
-                _set_role(membership.user, role)
+                _set_role(membership, role)
                 membership.role = TenantMembership.Role.TENANT_ADMIN if will_be_admin else TenantMembership.Role.STAFF
             membership.is_active = will_be_active
             membership.save(update_fields=['role', 'is_active'])
             _audit(request, 'team.update', _resolve('staff-memberships'), membership, before=before,
-                   after={'role': _role_of(membership.user), 'active': membership.is_active, 'admin': membership.role})
+                   after={'role': _role_of(membership), 'active': membership.is_active, 'admin': membership.role})
         membership.user.refresh_from_db()
         return Response(staff_rows(request, [membership])[0])
 

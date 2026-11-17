@@ -130,10 +130,10 @@ class EventPopupAndBookingTests(TenantTestCase):
 
     def test_status_lookup_requires_matching_phone(self):
         ref = self._book(2).data['reference']
-        ok = APIClient().get(f'/api/v1/event-bookings/{ref}/?phone=9876543210')
+        ok = APIClient().post(f'/api/v1/event-bookings/{ref}/', {'phone': '9876543210'}, format='json')
         self.assertEqual(ok.status_code, 200)
         self.assertEqual(ok.data['status_label'], 'Pending confirmation')
-        self.assertEqual(APIClient().get(f'/api/v1/event-bookings/{ref}/?phone=9876543299').status_code, 404)
+        self.assertEqual(APIClient().post(f'/api/v1/event-bookings/{ref}/', {'phone': '9876543299'}, format='json').status_code, 404)
 
 
     def test_signed_in_customer_sees_event_bookings_made_with_their_phone(self):
@@ -154,7 +154,7 @@ class EventPopupAndBookingTests(TenantTestCase):
         booking = EventRegistration.objects.create(schedule=schedule, contact_name='Phone caller',
                                                    contact_phone='98765 43210', participant_count=2, source='whatsapp')
         self.assertEqual(booking.contact_phone, '+919876543210')
-        r = APIClient().get(f'/api/v1/event-bookings/{booking.reference}/?phone=9876543210')
+        r = APIClient().post(f'/api/v1/event-bookings/{booking.reference}/', {'phone': '9876543210'}, format='json')
         self.assertEqual(r.status_code, 200)
         self.assertIn('box-cricket-community-play-day', str(schedule))
 

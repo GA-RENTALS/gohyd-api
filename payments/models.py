@@ -4,6 +4,7 @@ from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 
 from core.models import TenantBound, Timestamped, UUIDModel
+from core.storage import private_storage
 
 MONEY = dict(max_digits=12, decimal_places=2)
 
@@ -143,7 +144,7 @@ class PaymentVerification(UUIDModel):
     verified_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='+')
     approved = models.BooleanField()
     note = models.CharField(max_length=255, blank=True)
-    proof = models.FileField(upload_to='payment_proofs/%Y/%m/', blank=True)
+    proof = models.FileField(upload_to='payment_proofs/%Y/%m/', storage=private_storage, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

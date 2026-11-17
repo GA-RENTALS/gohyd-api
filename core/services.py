@@ -10,6 +10,20 @@ _DEFAULTS = {
     'checkout.hold_minutes': lambda: settings.CHECKOUT_HOLD_MINUTES,
 }
 
+_DEFAULT_SETTING_DESCRIPTIONS = {
+    'advance.default_basis_points': 'Default advance % in basis points (3000 = 30%). PLACEHOLDER: set the real business value.',
+    'balance.default_due_days_before': 'Balance due this many days before departure. PLACEHOLDER: set the real business value.',
+    'checkout.hold_minutes': 'Minutes an unpaid checkout holds seats before releasing them.',
+}
+
+
+def ensure_default_settings():
+    """Materialize known setting defaults so every value can be edited in Business settings."""
+    for key, value in _DEFAULTS.items():
+        Setting.objects.get_or_create(key=key, defaults={
+            'value': value(), 'description': _DEFAULT_SETTING_DESCRIPTIONS.get(key, ''),
+        })
+
 
 def get_setting(key, default=None):
     """Admin-editable value, falling back to the env/settings default."""

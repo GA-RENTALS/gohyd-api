@@ -101,6 +101,7 @@ INSTALLED_APPS = [
     'admin_api',
 ]
 AUTH_USER_MODEL = 'accounts.User'
+AUTHENTICATION_BACKENDS = ['accounts.backends.TenantRoleBackend']
 TENANT_RLS_ENABLED = _bool('TENANT_RLS_ENABLED', 'True')
 
 MIDDLEWARE = [
@@ -182,6 +183,14 @@ if AWS_STORAGE_BUCKET_NAME:  # section 2: files on S3 (served through CloudFront
     AWS_S3_OBJECT_PARAMETERS = {'CacheControl': 'public, max-age=31536000, immutable'}
     _uploads = {'BACKEND': 'storages.backends.s3.S3Storage'}
 STORAGES = {'default': _uploads, 'staticfiles': {'BACKEND': 'whitenoise.storage.CompressedStaticFilesStorage'}}
+# Payment screenshots and proofs (core.storage.private_storage): on S3, private objects behind signed links that expire,
+# served by S3 itself (the CDN can't sign). Without S3 they use the default storage like any other upload.
+PRIVATE_FILE_URL_SECONDS = int(os.getenv('PRIVATE_FILE_URL_SECONDS', '600'))
+if AWS_STORAGE_BUCKET_NAME:
+    STORAGES['private'] = {'BACKEND': 'storages.backends.s3.S3Storage', 'OPTIONS': {
+        'default_acl': 'private', 'querystring_auth': True, 'querystring_expire': PRIVATE_FILE_URL_SECONDS,
+        'custom_domain': None, 'object_parameters': {'CacheControl': 'private, no-store'},
+    }}
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # Business defaults. The live values are admin-editable (core.Setting); these are only first-run fallbacks.
@@ -203,6 +212,9 @@ RAZORPAY_WEBHOOK_SECRET = os.getenv('RAZORPAY_WEBHOOK_SECRET', '')
 
 CACHES = {'default': {'BACKEND': 'django.core.cache.backends.redis.RedisCache',
                       'LOCATION': os.getenv('REDIS_URL', 'redis://127.0.0.1:6379/1')}}
+if 'test' in sys.argv:
+    # Each test run starts with empty rate-limit and OTP counters instead of inheriting them from earlier runs in Redis.
+    CACHES = {'default': {'BACKEND': 'django.core.cache.backends.locmem.LocMemCache'}}
 CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'redis://127.0.0.1:6379/0')
 CELERY_RESULT_BACKEND = CELERY_BROKER_URL
 CELERY_ACCEPT_CONTENT = ['json']
@@ -214,6 +226,8 @@ CELERY_BEAT_SCHEDULE = {
     'balance-reminders': {'task': 'notifications.tasks.queue_balance_reminders', 'schedule': 3600.0},
     'trip-reminders': {'task': 'notifications.tasks.queue_trip_reminders', 'schedule': 3600.0},
     'expire-unpaid-checkouts': {'task': 'bookings.tasks.expire_unpaid_checkouts', 'schedule': 300.0},
+    'publish-due-content': {'task': 'content.tasks.publish_due', 'schedule': 300.0},
+    'expire-event-holds': {'task': 'trips.tasks.expire_event_holds', 'schedule': 3600.0},
 }
 
 CORS_ALLOWED_ORIGINS = [o.strip() for o in os.getenv('CORS_ALLOWED_ORIGINS', '').split(',') if o.strip()]
@@ -243,7 +257,13 @@ REST_FRAMEWORK = {
         'otp_verify': '30/hour',
         'password_login': '20/hour',
         'track': '600/hour',
-        'enquiry': '20/hour',
+        'event_booking': os.getenv('EVENT_BOOKING_RATE', '20/hour'),
+        'coupon_preview': os.getenv('COUPON_PREVIEW_RATE', '30/hour'),
+        'booking_lookup': os.getenv('BOOKING_LOOKUP_RATE', '20/hour'),
+        'payment_proof': os.getenv('PAYMENT_PROOF_RATE', '10/hour'),
+        'contact_enquiry': os.getenv('CONTACT_ENQUIRY_RATE', '20/hour'),
+        'corporate_enquiry': os.getenv('CORPORATE_ENQUIRY_RATE', '10/hour'),
+        'newsletter_signup': os.getenv('NEWSLETTER_SIGNUP_RATE', '10/hour'),
     },
     'DEFAULT_PAGINATION_CLASS': 'core.pagination.SitePagination',
     'PAGE_SIZE': 12,

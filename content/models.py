@@ -29,7 +29,7 @@ TRANSITIONS = {
     ContentStatus.CHANGES_REQUESTED: {ContentStatus.SUBMITTED, ContentStatus.DRAFT},
     ContentStatus.REJECTED: {ContentStatus.DRAFT},
     ContentStatus.APPROVED: {ContentStatus.PUBLISHED, ContentStatus.SCHEDULED, ContentStatus.CHANGES_REQUESTED},
-    ContentStatus.SCHEDULED: {ContentStatus.PUBLISHED, ContentStatus.APPROVED},
+    ContentStatus.SCHEDULED: {ContentStatus.PUBLISHED, ContentStatus.APPROVED, ContentStatus.DRAFT},   # DRAFT: cancel the schedule
     ContentStatus.PUBLISHED: {ContentStatus.DRAFT},
 }
 
@@ -60,6 +60,16 @@ class TranslationBase(Timestamped):
         if note:
             self.review_note = note
         self.save()
+
+
+class RichBodyMixin:
+    """For text written in the admin's rich-text editor: the website shows `body` as formatted HTML, so only safe tags
+    are kept (content/html.py). Plain text from before the editor becomes paragraphs."""
+
+    def save(self, *args, **kwargs):
+        from .html import clean_html
+        self.body = clean_html(self.body)
+        super().save(*args, **kwargs)
 
 
 class Publishable(models.Model):
@@ -185,7 +195,7 @@ class Destination(UUIDModel, Timestamped, Publishable):
         return self.slug
 
 
-class DestinationTranslation(TranslationBase):
+class DestinationTranslation(RichBodyMixin, TranslationBase):
     destination = models.ForeignKey(Destination, on_delete=models.CASCADE, related_name='translations')
     history = HistoricalRecords()
 
@@ -253,7 +263,7 @@ class CmsPage(UUIDModel, Timestamped, Publishable):
         return self.slug
 
 
-class CmsPageTranslation(TranslationBase):
+class CmsPageTranslation(RichBodyMixin, TranslationBase):
     page = models.ForeignKey(CmsPage, on_delete=models.CASCADE, related_name='translations')
     blocks = models.JSONField(default=dict, blank=True, help_text='Translated values for blocks_schema keys.')
     history = HistoricalRecords()
@@ -305,18 +315,13 @@ class Blog(UUIDModel, Timestamped, Publishable):
         return self.slug
 
 
-class BlogTranslation(TranslationBase):
+class BlogTranslation(RichBodyMixin, TranslationBase):
     blog = models.ForeignKey(Blog, on_delete=models.CASCADE, related_name='translations')
     history = HistoricalRecords()
 
     class Meta:
         db_table = 'blog_translations'
         unique_together = ('blog', 'language')
-
-    def save(self, *args, **kwargs):
-        from .html import clean_html
-        self.body = clean_html(self.body)   # the website shows this as formatted HTML, so only safe tags are kept
-        super().save(*args, **kwargs)
 
 
 class Testimonial(Timestamped):

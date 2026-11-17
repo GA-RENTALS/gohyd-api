@@ -69,6 +69,57 @@ class PaymentFlowTests(TenantTestCase):
         self.assertEqual(p.status, Payment.Status.SUCCEEDED)
         self.assertEqual(p.gateway_fee, Decimal('2.36'))
 
+    def test_a_second_start_for_the_same_amount_reuses_the_open_order(self):
+        first = self.pay('ADVANCE', 'tab-1', 'order_1')
+        second = self.pay('ADVANCE', 'tab-2', 'order_2')
+        self.assertEqual(second.pk, first.pk)
+        self.assertEqual(Payment.objects.count(), 1)
+
+    def test_a_second_paid_order_never_pays_more_than_the_booking_total(self):
+        """Paying the full amount twice: the second payment is refunded, never allocated beyond the total.
+        (A second advance would simply count toward the balance, which is still owed.)"""
+        from datetime import timedelta
+        from django.utils import timezone
+        from core.models import SecurityEvent
+        first = self.pay('FULL', 'tab-1', 'order_1')
+        # An order opened before the hold time ran out is not reused, so a second one can exist and both can be paid.
+        Payment.objects.filter(pk=first.pk).update(created_at=timezone.now() - timedelta(hours=3))
+        second = self.pay('FULL', 'tab-2', 'order_2')
+        self.assertNotEqual(second.pk, first.pk)
+        services.mark_succeeded(first.pk, 'pay_1')
+        services.mark_succeeded(second.pk, 'pay_2')
+        for b in self.order.bookings.all():
+            self.assertEqual(paid_amount(b), b.total_amount)
+            self.assertEqual(b.status, Booking.Status.FULLY_PAID)
+        self.assertEqual(sum(r.amount for r in Refund.objects.all()), second.amount)
+        self.assertTrue(SecurityEvent.objects.filter(kind='payment_overpaid').exists())
+
+    def test_webhook_for_a_different_amount_is_not_recorded(self):
+        from core.models import SecurityEvent
+        p = self.pay('ADVANCE', 'p1', 'order_9')
+        body = json.dumps({'id': 'evt_amt', 'event': 'payment.captured', 'payload': {'payment': {'entity': {
+            'id': 'pay_1', 'order_id': 'order_9', 'amount': 100, 'currency': 'INR'}}}}).encode()
+        sig = hmac.new(SECRET.encode(), body, hashlib.sha256).hexdigest()
+        services.handle_webhook(body, sig, json.loads(body))
+        p.refresh_from_db()
+        self.assertEqual(p.status, Payment.Status.CREATED)
+        self.assertTrue(SecurityEvent.objects.filter(kind='payment_amount_mismatch').exists())
+
+    def test_a_webhook_that_failed_is_processed_when_razorpay_retries(self):
+        p = self.pay('ADVANCE', 'p1', 'order_9')
+        body = webhook_body('payment.captured', 'order_9', eid='evt_retry')
+        sig = hmac.new(SECRET.encode(), body, hashlib.sha256).hexdigest()
+        with mock.patch('payments.services.mark_succeeded', side_effect=RuntimeError('database blip')):
+            with self.assertRaises(RuntimeError):
+                services.handle_webhook(body, sig, json.loads(body))
+        event = PaymentGatewayEvent.objects.get(event_id='evt_retry')
+        self.assertIsNone(event.processed_at)
+        self.assertIn('database blip', event.error)
+        self.assertEqual(services.handle_webhook(body, sig, json.loads(body)), 'processed')
+        self.assertEqual(services.handle_webhook(body, sig, json.loads(body)), 'duplicate')
+        p.refresh_from_db()
+        self.assertEqual((p.status, p.allocations.count()), (Payment.Status.SUCCEEDED, 2))
+
     def test_duplicate_webhook_is_ignored(self):                                # scenario 10
         self.pay('ADVANCE', 'p1', 'order_9')
         body = webhook_body('payment.captured', 'order_9')
