@@ -117,12 +117,14 @@ class ValidatedModelSerializer(serializers.ModelSerializer):
 
 
 def _kind(field):
-    if getattr(field, 'choices', None):
-        return 'choice'
+    # Relations first: DRF gives every related field a `choices` attribute (all its rows, keyed by raw id), which would
+    # otherwise make a foreign key look like a plain choice field with integer keys the admin's dropdowns can't match.
     if isinstance(field, serializers.ManyRelatedField):
         return 'relation-many'
     if isinstance(field, serializers.PrimaryKeyRelatedField):
         return 'relation'
+    if getattr(field, 'choices', None):
+        return 'choice'
     if isinstance(field, serializers.BooleanField):
         return 'boolean'
     if isinstance(field, serializers.IntegerField):
@@ -165,9 +167,8 @@ def schema_for(resource: Resource, request=None):
         if value['type'] == 'file':
             value['max_mb'] = MAX_UPLOAD_MB
             value['accept'] = ','.join(sorted(ALLOWED_UPLOADS))
-        choices = getattr(field, 'choices', None)
-        if choices:
-            value['choices'] = [{'value': key, 'label': str(label)} for key, label in choices.items()]
+        if value['type'] == 'choice':
+            value['choices'] = [{'value': key, 'label': str(label)} for key, label in field.choices.items()]
         relation = field.child_relation if isinstance(field, serializers.ManyRelatedField) else field
         if isinstance(relation, serializers.PrimaryKeyRelatedField):
             value['many'] = isinstance(field, serializers.ManyRelatedField)
