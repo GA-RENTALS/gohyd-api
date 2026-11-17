@@ -1,6 +1,6 @@
 from django.urls import path
 
-from . import customers, home, marketing, overview, payments, team, views
+from . import blogs, customers, home, marketing, overview, payments, team, views
 
 urlpatterns = [
     path('admin/session/', views.AdminSessionView.as_view(), name='admin-session'),
@@ -18,7 +18,9 @@ urlpatterns = [
     path('admin/customers/<str:pk>/', customers.CustomerDetailView.as_view(), name='admin-customer'),
     path('admin/customers/<str:pk>/block/', customers.CustomerBlockView.as_view(), name='admin-customer-block'),
     path('admin/customers/<str:pk>/notes/', customers.CustomerNotesView.as_view(), name='admin-customer-notes'),
+    path('admin/catalog/blogs/', blogs.BlogCatalogView.as_view(), name='admin-blog-catalog'),   # before the trips/events route
     path('admin/catalog/<slug:kind>/', overview.CatalogView.as_view(), name='admin-catalog'),
+    path('admin/overview/blogs/<str:pk>/', blogs.BlogOverviewView.as_view(), name='admin-blog-overview'),
     path('admin/overview/trips/<str:pk>/', overview.TripOverviewView.as_view(), name='admin-trip-overview'),
     path('admin/overview/events/<str:pk>/', overview.EventOverviewView.as_view(), name='admin-event-overview'),
     path('admin/team/', team.TeamView.as_view(), name='admin-team'),

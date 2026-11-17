@@ -15,6 +15,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from bookings.models import Booking
+from content.models import Blog
 from crm.models import Enquiry
 from payments.models import Payment, PaymentAllocation
 from trips.models import Event, EventRegistration, EventSchedule, Trip, TripSchedule
@@ -259,7 +260,7 @@ class BookingListView(APIView):
 # ---------- search ----------
 
 class SearchView(APIView):
-    """⌘K: find trips, events, bookings and customers by name, phone or reference."""
+    """⌘K: find trips, events, blog posts, bookings and customers by name, phone or reference."""
     permission_classes = [StaffOnly]
 
     def get(self, request):
@@ -275,6 +276,10 @@ class SearchView(APIView):
             events = list(Event.objects.filter(Q(slug__icontains=q) | Q(translations__title__icontains=q)).distinct()[:5])
             titles = title_map(Event, [e.pk for e in events])
             out += [{'type': 'Event', 'label': titles.get(e.pk, e.slug), 'sub': e.get_status_display(), 'href': f'/admin/overview/event/{e.pk}'} for e in events]
+        if _can(request, 'blogs'):
+            posts = list(Blog.objects.filter(Q(slug__icontains=q) | Q(translations__title__icontains=q)).distinct()[:5])
+            titles = title_map(Blog, [p.pk for p in posts])
+            out += [{'type': 'Blog post', 'label': titles.get(p.pk, p.slug), 'sub': p.get_status_display(), 'href': f'/admin/overview/blog/{p.pk}'} for p in posts]
         if _can(request, 'bookings'):
             for b in Booking.objects.filter(Q(reference__icontains=q) | Q(primary_booker__phone_number__icontains=q) | Q(primary_booker__full_name__icontains=q)).select_related('primary_booker', 'schedule')[:5]:
                 out.append({'type': 'Trip booking', 'label': f'{b.reference} · {b.primary_booker.full_name or b.primary_booker.phone_number}',

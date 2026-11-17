@@ -313,6 +313,11 @@ class BlogTranslation(TranslationBase):
         db_table = 'blog_translations'
         unique_together = ('blog', 'language')
 
+    def save(self, *args, **kwargs):
+        from .html import clean_html
+        self.body = clean_html(self.body)   # the website shows this as formatted HTML, so only safe tags are kept
+        super().save(*args, **kwargs)
+
 
 class Testimonial(Timestamped):
     author_name = models.CharField(max_length=120)

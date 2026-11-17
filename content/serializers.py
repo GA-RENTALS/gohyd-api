@@ -1,6 +1,7 @@
 from rest_framework import serializers
 
 from . import models as m
+from .html import clean_html
 
 
 def visible_translations(obj):
@@ -43,18 +44,34 @@ class DestinationSerializer(serializers.ModelSerializer):
         return request.build_absolute_uri(url) if request else url
 
 
+def media_url(asset, request):
+    if not asset or not asset.file:
+        return None
+    url = asset.file.url
+    return request.build_absolute_uri(url) if request else url
+
+
 class BlogSerializer(serializers.ModelSerializer):
     title = serializers.SerializerMethodField()
     summary = serializers.SerializerMethodField()
     body = serializers.SerializerMethodField()
+    seo = serializers.SerializerMethodField()
+    cover_url = serializers.SerializerMethodField()
+    category = serializers.SerializerMethodField()
+    tags = serializers.SerializerMethodField()
 
     class Meta:
         model = m.Blog
-        fields = ('id', 'slug', 'published_at', 'title', 'summary', 'body')
+        fields = ('id', 'slug', 'published_at', 'title', 'summary', 'body', 'seo', 'cover_url', 'category', 'tags')
 
-    def get_title(self, o): return pick(o, self.context.get('lang', 'en'), 'title')
-    def get_summary(self, o): return pick(o, self.context.get('lang', 'en'), 'summary')
-    def get_body(self, o): return pick(o, self.context.get('lang', 'en'), 'body')
+    def _lang(self): return self.context.get('lang', 'en')
+    def get_title(self, o): return pick(o, self._lang(), 'title')
+    def get_summary(self, o): return pick(o, self._lang(), 'summary')
+    def get_body(self, o): return clean_html(pick(o, self._lang(), 'body'))   # cleaned again on the way out: the site renders it as HTML
+    def get_seo(self, o): return {'title': pick(o, self._lang(), 'seo_title'), 'description': pick(o, self._lang(), 'seo_description')}
+    def get_cover_url(self, o): return media_url(o.cover, self.context.get('request'))
+    def get_category(self, o): return {'slug': o.category.slug, 'name': o.category.name} if o.category else None
+    def get_tags(self, o): return [{'slug': t.slug, 'name': t.name} for t in o.tags.all()]
 
 
 class CmsPageSerializer(serializers.ModelSerializer):

@@ -28,7 +28,8 @@ class DestinationViewSet(LangMixin, viewsets.ReadOnlyModelViewSet):
 class BlogViewSet(LangMixin, viewsets.ReadOnlyModelViewSet):
     serializer_class = s.BlogSerializer
     filterset_fields = ['category__slug', 'tags__slug']
-    queryset = m.Blog.objects.filter(status=m.ContentStatus.PUBLISHED).prefetch_related('translations')
+    queryset = (m.Blog.objects.filter(status=m.ContentStatus.PUBLISHED)
+                .select_related('cover', 'category').prefetch_related('translations', 'tags'))
 
 
 class CmsPageViewSet(LangMixin, viewsets.ReadOnlyModelViewSet):
