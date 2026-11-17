@@ -122,7 +122,7 @@ class MarketingPageTests(_AdminFixtures, TenantTestCase):
         res = self.client_.get(TAB.format('subscribers') + '?status=subscribed&export=csv')
         self.assertEqual(res.status_code, 200)
         lines = res.content.decode('utf-8-sig').strip().splitlines()
-        self.assertEqual(lines[0], 'Email,Subscribed,Unsubscribed')
+        self.assertEqual(lines[0], 'Email,Subscribed,Unsubscribed,Unsubscribe link')
         self.assertEqual(len(lines), 2)
         self.assertTrue(lines[1].startswith('a@example.com'))
 

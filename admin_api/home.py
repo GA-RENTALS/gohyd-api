@@ -17,7 +17,7 @@ from rest_framework.views import APIView
 from bookings.models import Booking
 from content.models import Blog, CmsPage, Destination
 from crm.models import CorporateEnquiry, Enquiry
-from payments.models import Payment, PaymentAllocation
+from payments.models import Payment, PaymentAllocation, PaymentGatewayEvent
 from trips.models import Event, EventRegistration, EventSchedule, Trip, TripSchedule
 
 from .customers import customer_queryset
@@ -29,6 +29,9 @@ from .views import AdminDashboardView, _access_log, _resolve
 
 # Payments page tab for each payment status (admin_api/payments.py STATUS groups).
 _PAYMENT_TAB = {Payment.Status.PENDING_VERIFICATION: 'pending', Payment.Status.SUCCEEDED: 'succeeded', Payment.Status.FAILED: 'failed'}
+
+# Razorpay retries a failed webhook on its own for a while; only then is it something for staff to look at.
+FAILED_EVENT_GRACE = timedelta(minutes=15)
 
 
 def _payment_href(payment):
@@ -117,6 +120,14 @@ class HomeView(APIView):
                 'title': ', '.join(sorted({titles.get(a.booking.schedule.trip_id, '') for a in p.allocations.all()})),
                 'parent_id': next((str(a.booking.schedule.trip_id) for a in p.allocations.all()), None),
             } for p in items]}
+        if staff_has_perm(request, 'payments.change_payment'):
+            # A Razorpay event that still fails after its own retries: the payment may not be recorded (NEXT.md item 2).
+            failing = (PaymentGatewayEvent.objects.filter(signature_valid=True, processed_at__isnull=True,
+                                                          created_at__lte=now - FAILED_EVENT_GRACE)
+                       .exclude(error='').order_by('created_at'))
+            todo['failed_payment_events'] = {'count': failing.count(), 'items': [{
+                'id': str(e.pk), 'event_type': e.event_type, 'error': e.error, 'created_at': _iso(e.created_at),
+            } for e in failing[:5]]}
         if see_events:
             qs = EventRegistration.objects.filter(event_status_q('awaiting', now)).select_related('schedule').order_by('-payment_submitted_at', 'created_at')
             items = list(qs[:6])

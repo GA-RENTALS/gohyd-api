@@ -289,11 +289,14 @@ TINYMCE_DEFAULT_CONFIG = {
     'relative_urls': False, 'convert_urls': False,
 }
 
+# The public website, for links the API hands out (e.g. newsletter unsubscribe links in the subscriber export).
+FRONTEND_ORIGIN = os.getenv('FRONTEND_ORIGIN', 'http://localhost:3000').rstrip('/')
+
 UNFOLD = {
     'SITE_TITLE': 'GoHyderabad admin',
     'SITE_HEADER': 'GoHyderabad',
     'SITE_SUBHEADER': 'Admin workspace',
-    'SITE_URL': os.getenv('FRONTEND_ORIGIN', 'http://localhost:3000'),
+    'SITE_URL': FRONTEND_ORIGIN,
     'SHOW_HISTORY': True,
     'SHOW_VIEW_ON_SITE': False,
     'COMMAND': {'search_models': True, 'show_history': True},

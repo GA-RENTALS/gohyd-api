@@ -142,3 +142,26 @@ class PublishingAndAdminShapeTests(_AdminFixtures, TenantTestCase):
     def test_a_superusers_session_lists_permissions_for_the_admin_screens(self):
         perms = self.client_.get('/api/v1/admin/session/').data['permissions']
         self.assertIn('bookings.grant_departure_exception', perms)
+
+    def test_a_payment_event_still_failing_after_razorpays_retries_is_on_the_dashboard(self):
+        from payments.models import PaymentGatewayEvent
+        old = PaymentGatewayEvent.objects.create(provider='razorpay', event_id='evt_old', event_type='payment.captured',
+                                                 payload={}, signature_valid=True, error='database blip')
+        PaymentGatewayEvent.objects.filter(pk=old.pk).update(created_at=timezone.now() - timedelta(hours=1))
+        PaymentGatewayEvent.objects.create(provider='razorpay', event_id='evt_new', event_type='payment.captured',
+                                           payload={}, signature_valid=True, error='still retrying')   # Razorpay's turn
+        PaymentGatewayEvent.objects.create(provider='razorpay', event_id='evt_ok', event_type='payment.captured',
+                                           payload={}, signature_valid=True, processed_at=timezone.now())
+        todo = self.client_.get('/api/v1/admin/home/').data['todo']
+        self.assertEqual(todo['failed_payment_events']['count'], 1)
+        self.assertEqual(todo['failed_payment_events']['items'][0]['id'], str(old.pk))
+
+    def test_the_subscriber_export_carries_each_unsubscribe_link(self):
+        from crm.models import NewsletterSubscription
+        NewsletterSubscription.objects.create(email='reader@example.com', consent_at=timezone.now())
+        res = self.client_.get('/api/v1/admin/marketing/subscribers/?export=csv')
+        self.assertEqual(res.status_code, 200)
+        body = b''.join(res.streaming_content).decode() if getattr(res, 'streaming', False) else res.content.decode()
+        self.assertIn('Unsubscribe link', body)
+        self.assertIn('/newsletter/unsubscribe?token=', body)
+

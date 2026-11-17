@@ -12,6 +12,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from crm.models import Campaign, CampaignCost, Coupon, CouponRedemption, NewsletterSubscription, ReferralCampaign, ReferralRecord
+from crm.newsletter import unsubscribe_url
 from tracking.models import ConversionEvent, VisitorSession
 from trips.models import EventRegistration
 
@@ -101,7 +102,8 @@ class MarketingListView(APIView):
         if search:
             qs = qs.filter(email__icontains=search)
         groups = {'subscribed': Q(unsubscribed_at__isnull=True), 'unsubscribed': Q(unsubscribed_at__isnull=False)}
-        columns = [('Email', 'email'), ('Subscribed', 'consent_at'), ('Unsubscribed', 'unsubscribed_at')]
+        # The unsubscribe link goes in every mailing sent from the email tool (crm/newsletter.py).
+        columns = [('Email', 'email'), ('Subscribed', 'consent_at'), ('Unsubscribed', 'unsubscribed_at'), ('Unsubscribe link', 'unsubscribe_url')]
         return qs, groups, subscriber_rows, columns
 
     @staticmethod
@@ -206,7 +208,7 @@ def attribution(campaign):
 
 def subscriber_rows(subscriptions):
     return [{'id': str(s.pk), 'email': s.email, 'consent_at': _iso(s.consent_at), 'unsubscribed_at': _iso(s.unsubscribed_at),
-             'subscribed': s.unsubscribed_at is None} for s in subscriptions]
+             'subscribed': s.unsubscribed_at is None, 'unsubscribe_url': unsubscribe_url(s)} for s in subscriptions]
 
 
 def referral_rows(campaigns):

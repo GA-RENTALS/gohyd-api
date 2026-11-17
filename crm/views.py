@@ -114,6 +114,30 @@ class NewsletterSubscribeView(APIView):
         return Response({'status': 'subscribed'}, status=201)
 
 
+class NewsletterUnsubscribeSerializer(serializers.Serializer):
+    token = serializers.CharField(max_length=200)
+
+
+class NewsletterUnsubscribeView(APIView):
+    """POST {token} from the unsubscribe page. A POST, not a link that acts on GET, so email scanners that open every
+    link can't unsubscribe people by accident."""
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+    throttle_classes = [TrustedScopedRateThrottle]
+    throttle_scope = 'newsletter_signup'
+
+    @extend_schema(tags=['CRM'], request=NewsletterUnsubscribeSerializer)
+    def post(self, request):
+        from .newsletter import unsubscribe
+        data = NewsletterUnsubscribeSerializer(data=request.data)
+        data.is_valid(raise_exception=True)
+        subscription = unsubscribe(data.validated_data['token'])
+        if subscription is None:
+            return Response({'detail': 'This unsubscribe link is not valid. Copy the whole link from the email, or contact us.'},
+                            status=400)
+        return Response({'status': 'unsubscribed', 'email': subscription.email})
+
+
 # ---------- membership plans ----------
 
 class MembershipPlanSerializer(serializers.ModelSerializer):
