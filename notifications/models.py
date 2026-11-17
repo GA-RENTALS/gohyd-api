@@ -117,7 +117,7 @@ class NotificationFailure(TenantBound):
 
 
 class IntegrationProvider(TenantBound):
-    key = models.SlugField(primary_key=True)      # razorpay, whatsapp, posthog, s3, sms
+    key = models.SlugField(primary_key=True)      # cashfree, whatsapp, posthog, s3, sms
     name = models.CharField(max_length=80)
 
     class Meta:

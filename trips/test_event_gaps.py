@@ -8,7 +8,7 @@ from rest_framework.test import APIClient
 
 from content.models import ContentStatus
 from core.models import OutboxEvent
-from core.testing import TenantTestCase
+from core.testing import make_user, TenantTestCase
 
 from .models import Event, EventRegistration, EventSchedule, EventTranslation
 
@@ -31,8 +31,12 @@ class _EventFixture:
 
     def _book(self, event=None, count=2, phone='9876543210', **extra):
         event = event or self.event
-        return APIClient().post(BOOK, {'event': event.slug, 'schedule': str(event.schedules.get().pk), 'name': 'Ravi',
-                                       'phone': phone, 'participant_count': count, 'consent_to_contact': True, **extra}, format='json')
+        from accounts.models import User
+        user = User.objects.filter(phone_number=f'+91{phone}').first() or make_user(f'+91{phone}', full_name='Ravi')
+        client = APIClient()
+        client.force_authenticate(user)   # booking needs an account; its phone is used
+        return client.post(BOOK, {'event': event.slug, 'schedule': str(event.schedules.get().pk), 'name': 'Ravi',
+                                  'participant_count': count, 'consent_to_contact': True, **extra}, format='json')
 
 
 class EventCustomerMessageTests(_EventFixture, TenantTestCase):

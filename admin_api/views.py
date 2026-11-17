@@ -376,7 +376,7 @@ class StaffActionView(APIView):
         'record-manual-payment': '_record_manual_payment', 'departure-exception': '_departure_exception',
         'content-transition': '_content_transition', 'participant-check-in': '_participant_check_in',
         'cancel-booking': '_cancel_booking', 'cancel-date': '_cancel_date', 'event-check-in': '_event_check_in',
-        'record-event-refund': '_record_event_refund', 'retry-webhook': '_retry_webhook',
+        'record-event-refund': '_record_event_refund', 'retry-webhook': '_retry_webhook', 'issue-refund': '_issue_refund',
         'resend-notifications': '_resend_notifications',
     }
 
@@ -419,8 +419,21 @@ class StaffActionView(APIView):
         _audit(request, 'refunds.reject', resource, refund, before=before, after=_serialize(resource, refund, request))
         return Response(_serialize(resource, refund, request))
 
+    def _issue_refund(self, request):
+        """Return all or part of a booking's online payment through Cashfree, outside a cancellation."""
+        resource = _resolve('refunds')
+        require_staff_perm(request, 'payments.change_refund', 'You do not have permission to issue refunds.')
+        if request.data.get('event_booking_id'):
+            target = {'event_registration': EventRegistration.objects.get(pk=request.data.get('event_booking_id'))}
+        else:
+            target = {'booking': Booking.objects.get(pk=request.data.get('booking_id'))}
+        refund = payment_services.issue_refund(request.user, amount=request.data.get('amount'), reason=str(request.data.get('reason', '')),
+                                               request=request, **target)
+        _audit(request, 'refunds.issue', resource, refund, after=_serialize(resource, refund, request))
+        return Response(_serialize(resource, refund, request), status=status.HTTP_201_CREATED)
+
     def _retry_webhook(self, request):
-        """Run a stored Razorpay event again after the fault that stopped it is fixed (it was authenticated on arrival)."""
+        """Run a stored Cashfree event again after the fault that stopped it is fixed (it was authenticated on arrival)."""
         require_staff_perm(request, 'payments.change_payment', 'You do not have permission to retry payment events.')
         event = PaymentGatewayEvent.objects.get(pk=request.data.get('event_id'))
         try:
@@ -725,8 +738,12 @@ class AdminDashboardView(APIView):
         if user.has_perm('core.view_setting'):
             for row in Setting.objects.filter(description__contains='PLACEHOLDER'):
                 add(f'setting-{row.key}', 'warning', f'Confirm "{row.key}"', 'This is still a first-run value, not a business decision. Edit it to the real value.', '/admin/system/settings')
-            if not settings.RAZORPAY_KEY_ID:
-                add('razorpay', 'warning', 'Online payments are not connected', 'Razorpay keys are missing, so customers cannot pay online.', '')
+            if not (settings.CASHFREE_APP_ID and settings.CASHFREE_SECRET_KEY):
+                add('cashfree', 'warning', 'Online payments are not connected',
+                    'Cashfree keys are missing (CASHFREE_APP_ID, CASHFREE_SECRET_KEY), so customers cannot pay online.', '')
+            elif settings.CASHFREE_ENV != 'production' and not settings.DEBUG:
+                add('cashfree-sandbox', 'warning', 'Payments are in Cashfree test mode',
+                    'CASHFREE_ENV is "sandbox": no real money is taken. Switch to production keys before going live.', '')
             if not (os.getenv('WHATSAPP_API_URL') and os.getenv('WHATSAPP_ACCESS_TOKEN')):
                 add('whatsapp', 'warning', 'WhatsApp is not connected', 'Sign-in codes and booking messages cannot be sent. In development, codes only appear in the server console.', '')
             if not settings.AWS_STORAGE_BUCKET_NAME:

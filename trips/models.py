@@ -1,4 +1,6 @@
 """Trips, schedules, pricing, capacity, itineraries, pickup points, events (sections 13.3, 3.1-3.3)."""
+from decimal import Decimal
+
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
@@ -304,7 +306,10 @@ class Event(UUIDModel, Timestamped, Publishable):
         default=24, db_default=24, validators=[MaxValueValidator(720)],
         help_text='Customers can cancel online until this many hours before the event starts (0 = until it starts). '
                   'The refund follows the refund policy.')
-    # UPI payment by QR: shown only when a QR image is set. The customer pays, then uploads a screenshot.
+    advance_basis_points = models.PositiveSmallIntegerField(
+        null=True, blank=True, validators=[MaxValueValidator(10000)],
+        help_text='Advance to pay online when booking, in basis points (3000 = 30%). Empty = the full price.')
+    # Before online payment, customers paid by UPI QR and uploaded a screenshot. Kept for past bookings; not shown any more.
     payment_qr = models.ForeignKey(
         MediaAsset, null=True, blank=True, on_delete=models.SET_NULL, related_name='+',
         help_text='UPI QR code image. When set, customers see it after booking and are asked to upload a payment screenshot.')
@@ -574,10 +579,11 @@ def _payment_screenshot_path(instance, filename):
 
 
 class EventRegistration(UUIDModel, Timestamped):
-    """One event booking (individual or group). Pending bookings hold slots until `reserved_until`; only staff confirm them."""
+    """One event booking (individual or group), made by a signed-in customer. It holds its places until `reserved_until`
+    while the advance is paid online; a verified Cashfree payment confirms it (payments.services)."""
 
     class Status(models.TextChoices):
-        PENDING = 'PENDING', 'Pending confirmation'
+        PENDING = 'PENDING', 'Awaiting payment'
         CONFIRMED = 'CONFIRMED', 'Confirmed'
         CANCELLED = 'CANCELLED', 'Cancelled'
         EXPIRED = 'EXPIRED', 'Expired (hold released)'
@@ -593,6 +599,8 @@ class EventRegistration(UUIDModel, Timestamped):
     unit_price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True,
                                      help_text='Price per participant when booked. Filled from the event price if empty.')
     total_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0, editable=False)
+    advance_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0, db_default=0, editable=False,
+                                         help_text='Paid online to confirm the booking; the rest is the balance.')
     status = models.CharField(max_length=12, choices=Status.choices, default=Status.PENDING, db_index=True)
     reserved_until = models.DateTimeField(null=True, blank=True,
                                           help_text='Pending bookings stop holding slots after this time.')
@@ -671,10 +679,35 @@ class EventRegistration(UUIDModel, Timestamped):
         return (self.effective_status in (self.Status.PENDING, self.Status.CONFIRMED)
                 and not self.schedule.has_started(now) and now < self.cancel_deadline())
 
+    # ---- money ----
+
+    def paid_online(self):
+        """What arrived through Cashfree (or verified manual payments) for this booking."""
+        from django.db.models import Sum
+        from payments.models import Payment
+        if not self.pk:
+            return Decimal('0.00')
+        return (Payment.objects.filter(event_registration=self, status=Payment.Status.SUCCEEDED)
+                .aggregate(t=Sum('amount'))['t'] or Decimal('0.00'))
+
+    def outstanding(self):
+        if self.status in (self.Status.CANCELLED, self.Status.EXPIRED):
+            return Decimal('0.00')
+        return max(Decimal('0.00'), self.total_amount - self.paid_online())
+
+    def _paid_by_qr(self):
+        """Paid by UPI QR before online payment existed: staff confirmed it or a screenshot was sent, and no online payment."""
+        from payments.models import Payment
+        return (bool(self.pk) and not Payment.objects.filter(event_registration=self).exists()
+                and (self._saved_status == self.Status.CONFIRMED or bool(self.payment_submitted_at)))
+
     @property
     def counts_as_paid(self):
-        """Staff confirmed it (so checked the payment), or the customer sent a payment screenshot. Free bookings never are."""
-        return self.total_amount > 0 and (self._saved_status == self.Status.CONFIRMED or bool(self.payment_submitted_at))
+        """Money was received for it. Free bookings never are."""
+        return self.total_amount > 0 and (self.paid_online() > 0 or self._paid_by_qr())
+
+    def _refund_base(self):
+        return self.paid_online() if self.paid_online() > 0 else self.total_amount
 
     def refund_quote(self, now=None):
         """(basis points, amount) the customer would get back by cancelling now. Nothing is due on an unpaid booking."""
@@ -683,7 +716,7 @@ class EventRegistration(UUIDModel, Timestamped):
             return 0, percent_of(0, 0)
         hours_left = (self.schedule.starts_at - (now or timezone.now())).total_seconds() / 3600
         bp = refund_basis_points_for(self.refund_tiers(), hours_left)
-        return bp, percent_of(self.total_amount, bp)
+        return bp, percent_of(self._refund_base(), bp)
 
     def clean(self):
         super().clean()
@@ -719,10 +752,15 @@ class EventRegistration(UUIDModel, Timestamped):
         if self.unit_price is None and self.schedule_id:
             self.unit_price = self.schedule.event.price
         self.total_amount = max(0, (self.unit_price or 0) * self.participant_count - (self.discount_amount or 0))
+        if self._state.adding and self.schedule_id:
+            from core.money import percent_of
+            bp = self.schedule.event.advance_basis_points
+            self.advance_amount = self.total_amount if bp is None else min(self.total_amount, percent_of(self.total_amount, bp))
         if self.status == self.Status.PENDING and self.reserved_until is None and self.schedule_id:
             from datetime import timedelta
-            # Hold for the configured time, but never past the event start.
-            self.reserved_until = min(now + timedelta(hours=self.schedule.event.reservation_hold_hours),
+            from bookings.services import checkout_hold_minutes
+            # Held while the customer pays online (the same hold as a trip checkout), never past the event start.
+            self.reserved_until = min(now + timedelta(minutes=checkout_hold_minutes()),
                                       max(self.schedule.starts_at, now + timedelta(minutes=30)))
         if self.status == self.Status.CONFIRMED and not self.confirmed_at:
             self.confirmed_at = now
@@ -732,8 +770,7 @@ class EventRegistration(UUIDModel, Timestamped):
         refund_due = self._refund_due() if cancelling else None
         result = super().save(*args, **kwargs)
         if refund_due:
-            from payments.models import EventRefund
-            EventRefund.objects.get_or_create(registration=self, defaults=refund_due)
+            self._request_refund(**refund_due)
         self._announce_status_change()
         return result
 
@@ -743,8 +780,20 @@ class EventRegistration(UUIDModel, Timestamped):
         if not self.counts_as_paid:
             return None
         bp = 10000 if self._refund_basis_points is None else self._refund_basis_points
-        amount = percent_of(self.total_amount, bp)
+        amount = percent_of(self._refund_base(), bp)
         return {'amount': amount, 'refund_basis_points': bp} if amount > 0 else None
+
+    def _request_refund(self, amount, refund_basis_points):
+        """Paid online: a Cashfree refund for finance to approve. Paid by QR (history): a UPI refund staff send by hand."""
+        from core.services import emit
+        from payments.models import EventRefund, Refund
+        if self.paid_online() > 0:
+            if not Refund.objects.filter(event_registration=self).exclude(status=Refund.Status.REJECTED).exists():
+                refund = Refund.objects.create(event_registration=self, amount=amount, tax_adjustment=Decimal('0.00'),
+                                               reason=(self.cancel_reason or 'Booking cancelled')[:255])
+                emit('refund.requested', refund.pk, {'event_booking': str(self.pk)})
+        else:
+            EventRefund.objects.get_or_create(registration=self, defaults={'amount': amount, 'refund_basis_points': refund_basis_points})
 
     def _announce_status_change(self):
         """Queue a customer message when the booking becomes confirmed or cancelled (sent by notifications.tasks)."""

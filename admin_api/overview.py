@@ -178,6 +178,8 @@ class EventOverviewView(APIView):
 
         confirmed = [r for r in regs if status_of(r) == EventRegistration.Status.CONFIRMED]
         pending = [r for r in regs if status_of(r) == EventRegistration.Status.PENDING]
+        from .listing import _event_money   # listing imports this module
+        money = {r.pk: _event_money(r, status_of(r)) for r in confirmed + pending}   # paid online (or by QR before) and due
         stats = {
             'registrations': len(confirmed) + len(pending),
             'paid': len(confirmed),
@@ -185,8 +187,8 @@ class EventOverviewView(APIView):
             'pending_with_proof': sum(1 for r in pending if r.payment_screenshot or r.payment_utr),
             'cancelled': sum(1 for r in regs if status_of(r) in {EventRegistration.Status.CANCELLED, EventRegistration.Status.EXPIRED}),
             'participants': sum(r.participant_count for r in confirmed + pending),
-            'revenue': _money(sum((r.total_amount for r in confirmed), ZERO)),
-            'outstanding': _money(sum((r.total_amount for r in pending), ZERO)),
+            'revenue': _money(sum((Decimal(money[r.pk]['paid']) for r in confirmed + pending), ZERO)),
+            'outstanding': _money(sum((Decimal(money[r.pk]['due']) for r in confirmed + pending), ZERO)),
         }
 
         def proof_url(r):
@@ -203,8 +205,7 @@ class EventOverviewView(APIView):
             'name': r.contact_name or '—', 'phone': r.contact_phone, 'email': r.contact_email,
             'schedule_id': str(r.schedule_id), 'starts_at': _iso(r.schedule.starts_at),
             'participants': r.participant_count, 'total': _money(r.total_amount),
-            'paid': _money(r.total_amount if status_of(r) == EventRegistration.Status.CONFIRMED else ZERO),
-            'outstanding': _money(r.total_amount if status_of(r) == EventRegistration.Status.PENDING else ZERO),
+            'paid': money.get(r.pk, {}).get('paid', _money(ZERO)), 'outstanding': money.get(r.pk, {}).get('due', _money(ZERO)),
             'payment_proof_url': proof_url(r), 'payment_utr': r.payment_utr,
             'reserved_until': _iso(r.reserved_until), 'customer_note': r.customer_note, 'created_at': _iso(r.created_at),
         } for r in regs]

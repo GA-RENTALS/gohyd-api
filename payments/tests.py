@@ -1,5 +1,3 @@
-import hashlib
-import hmac
 import json
 from decimal import Decimal
 from unittest import mock
@@ -8,18 +6,16 @@ from django.test import TestCase, override_settings
 
 from bookings.models import Booking
 from bookings.services import BookingError, CheckoutLine, cancel_booking, create_checkout, outstanding, paid_amount
-from core.testing import make_entity, make_gst, make_trip, make_user, TenantTestCase
+from core.testing import (TenantTestCase, cashfree_attempt, cashfree_webhook, fake_cashfree_order, make_entity, make_gst,
+                          make_trip, make_user)
 from . import invoicing, services
 from .models import Payment, PaymentGatewayEvent, PaymentKind, Refund, RefundTransaction
 
-SECRET = 'whsec_test'
+SECRET = 'cf_test_secret'
 
 
-def webhook_body(event, order_id, pay_id='pay_1', eid='evt_1'):
-    return json.dumps({'id': eid, 'event': event, 'payload': {'payment': {'entity': {'id': pay_id, 'order_id': order_id, 'fee': 236}}}}).encode()
-
-
-@override_settings(RAZORPAY_KEY_ID='k', RAZORPAY_KEY_SECRET='s', RAZORPAY_WEBHOOK_SECRET=SECRET)
+@override_settings(CASHFREE_APP_ID='TEST_APP', CASHFREE_SECRET_KEY=SECRET, CASHFREE_ORDER_PREFIX='GH', PAYMENT_BRAND='GOHYDERABAD',
+                   PUBLIC_API_ORIGIN='https://api.example.com', FRONTEND_ORIGIN='https://site.example.com')
 class PaymentFlowTests(TenantTestCase):
     def setUp(self):
         self.user = make_user()
@@ -27,23 +23,48 @@ class PaymentFlowTests(TenantTestCase):
         _, self.s2 = make_trip('b', price='2000.00', advance_bp=5000)
         self.order = create_checkout(self.user, [CheckoutLine(self.s1.pk, 1), CheckoutLine(self.s2.pk, 1)], 'co')
 
-    def pay(self, kind, key, order_id, bookings=None):
-        with mock.patch('payments.gateway.create_order', return_value={'id': order_id}):
-            return services.start_online_payment(self.user, self.order, kind, key, bookings)
+    def pay(self, kind, key, bookings=None):
+        with mock.patch('payments.gateway.create_order', side_effect=fake_cashfree_order) as create:
+            p = services.start_online_payment(self.user, self.order, kind, key, bookings)
+        self.last_order_call = create.call_args
+        return p
+
+    def settle(self, p, attempts):
+        """Cashfree reports these attempts for the order; the backend checks and records them."""
+        with mock.patch('payments.gateway.get_order_payments', return_value=attempts), \
+                mock.patch('payments.gateway.get_order', return_value={'order_status': 'ACTIVE'}):
+            return services.reconcile_order(p.gateway_order_id)
+
+    def webhook(self, p, attempt, signature=None):
+        body, ts, sig = cashfree_webhook(p.gateway_order_id, attempt)
+        with mock.patch('payments.gateway.get_order_payments', return_value=[attempt]), \
+                mock.patch('payments.gateway.get_order', return_value={'order_status': 'ACTIVE'}):
+            return services.handle_webhook(body, ts, signature or sig, json.loads(body))
 
     def test_one_payment_covers_several_bookings(self):                         # scenario 5
-        p = self.pay('ADVANCE', 'p1', 'order_1')
+        p = self.pay('ADVANCE', 'p1')
         self.assertEqual(p.amount, Decimal('2500.00'))      # 1500 + 1000
         services.mark_succeeded(p.pk, 'pay_1')
         self.assertEqual(p.allocations.count(), 2)
         for b in self.order.bookings.all():
             self.assertEqual(b.status, Booking.Status.CONFIRMED)
 
+    def test_the_order_is_branded_and_the_secret_never_reaches_the_browser(self):
+        p = self.pay('ADVANCE', 'p1')
+        kwargs = self.last_order_call.kwargs
+        self.assertTrue(p.gateway_order_id.startswith('GH-'))
+        self.assertEqual(kwargs['order_id'], p.gateway_order_id)
+        self.assertEqual(kwargs['order_amount'], Decimal('2500.00'))
+        self.assertEqual(kwargs['tags']['brand'], 'GOHYDERABAD')
+        self.assertEqual(kwargs['notify_url'], 'https://api.example.com/api/v1/payments/cashfree/webhook/')
+        self.assertEqual(kwargs['return_url'], f'https://site.example.com/checkout/{self.order.pk}?order_id={p.gateway_order_id}')
+        self.assertEqual(p.gateway_session_id, f'session_{p.gateway_order_id}')
+
     def test_balance_paid_separately_before_departure(self):                    # scenario 6
-        services.mark_succeeded(self.pay('ADVANCE', 'p1', 'o1').pk, 'pay_1')
+        services.mark_succeeded(self.pay('ADVANCE', 'p1').pk, 'pay_1')
         b = self.order.bookings.get(schedule=self.s1)
         self.assertEqual(outstanding(b), Decimal('3500.00'))
-        p2 = self.pay('BALANCE', 'p2', 'o2', [b.pk])
+        p2 = self.pay('BALANCE', 'p2', [b.pk])
         self.assertEqual(p2.amount, Decimal('3500.00'))
         services.mark_succeeded(p2.pk, 'pay_2')
         b.refresh_from_db()
@@ -52,26 +73,58 @@ class PaymentFlowTests(TenantTestCase):
         self.assertEqual(Booking.objects.get(schedule=self.s2).status, Booking.Status.CONFIRMED)   # other booking untouched
 
     def test_mark_succeeded_is_idempotent(self):
-        p = self.pay('ADVANCE', 'p1', 'o1')
+        p = self.pay('ADVANCE', 'p1')
         services.mark_succeeded(p.pk, 'pay_1'); services.mark_succeeded(p.pk, 'pay_1')
         self.assertEqual(p.allocations.count(), 2)
 
     def test_idempotency_key_replays_same_payment(self):
-        a = self.pay('ADVANCE', 'same', 'o1'); b = self.pay('ADVANCE', 'same', 'o9')
+        a = self.pay('ADVANCE', 'same'); b = self.pay('ADVANCE', 'same')
         self.assertEqual(a.pk, b.pk)
 
+    def test_returning_from_cashfree_records_a_verified_payment(self):
+        p = self.pay('ADVANCE', 'p1')
+        payment, outcome = self.settle(p, [cashfree_attempt(p, 'FAILED', cf_payment_id='1'), cashfree_attempt(p)])
+        self.assertEqual((outcome, payment.status, payment.gateway_payment_id), ('paid', Payment.Status.SUCCEEDED, str(p.pk.int % 10**10)))
+
+    def test_a_failed_or_abandoned_attempt_leaves_the_order_open_to_retry(self):
+        p = self.pay('ADVANCE', 'p1')
+        self.assertEqual(self.settle(p, [cashfree_attempt(p, 'FAILED')])[1], 'failed')
+        self.assertEqual(self.settle(p, [cashfree_attempt(p, 'USER_DROPPED')])[1], 'cancelled')
+        p.refresh_from_db()
+        self.assertEqual(p.status, Payment.Status.CREATED)
+        self.assertEqual(self.pay('ADVANCE', 'retry').pk, p.pk)      # the retry reuses the open order
+
+    def test_an_expired_order_is_closed(self):
+        p = self.pay('ADVANCE', 'p1')
+        with mock.patch('payments.gateway.get_order_payments', return_value=[]), \
+                mock.patch('payments.gateway.get_order', return_value={'order_status': 'EXPIRED'}):
+            payment, outcome = services.reconcile_order(p.gateway_order_id)
+        self.assertEqual((outcome, payment.status), ('expired', Payment.Status.FAILED))
+
+    def test_a_payment_for_the_wrong_amount_is_not_recorded(self):
+        from core.models import SecurityEvent
+        p = self.pay('ADVANCE', 'p1')
+        _, outcome = self.settle(p, [cashfree_attempt(p, amount=1)])
+        p.refresh_from_db()
+        self.assertEqual((outcome, p.status), ('pending', Payment.Status.CREATED))
+        self.assertTrue(SecurityEvent.objects.filter(kind='payment_amount_mismatch').exists())
+
     def test_webhook_marks_paid_when_browser_closed(self):                      # scenario 9
-        p = self.pay('ADVANCE', 'p1', 'order_9')
-        body = webhook_body('payment.captured', 'order_9')
-        sig = hmac.new(SECRET.encode(), body, hashlib.sha256).hexdigest()
-        self.assertEqual(services.handle_webhook(body, sig, json.loads(body)), 'processed')
+        p = self.pay('ADVANCE', 'p1')
+        self.assertEqual(self.webhook(p, cashfree_attempt(p)), 'processed')
         p.refresh_from_db()
         self.assertEqual(p.status, Payment.Status.SUCCEEDED)
-        self.assertEqual(p.gateway_fee, Decimal('2.36'))
+
+    def test_webhook_for_another_brands_order_is_ignored(self):
+        """The merchant account is shared with GoAdventure: its orders may notify this endpoint too."""
+        body, ts, sig = cashfree_webhook('GA-12345', {'cf_payment_id': '9', 'payment_status': 'SUCCESS'})
+        with mock.patch('payments.gateway.get_order_payments') as lookup:
+            self.assertEqual(services.handle_webhook(body, ts, sig, json.loads(body)), 'processed')
+        lookup.assert_not_called()
 
     def test_a_second_start_for_the_same_amount_reuses_the_open_order(self):
-        first = self.pay('ADVANCE', 'tab-1', 'order_1')
-        second = self.pay('ADVANCE', 'tab-2', 'order_2')
+        first = self.pay('ADVANCE', 'tab-1')
+        second = self.pay('ADVANCE', 'tab-2')
         self.assertEqual(second.pk, first.pk)
         self.assertEqual(Payment.objects.count(), 1)
 
@@ -81,10 +134,10 @@ class PaymentFlowTests(TenantTestCase):
         from datetime import timedelta
         from django.utils import timezone
         from core.models import SecurityEvent
-        first = self.pay('FULL', 'tab-1', 'order_1')
+        first = self.pay('FULL', 'tab-1')
         # An order opened before the hold time ran out is not reused, so a second one can exist and both can be paid.
         Payment.objects.filter(pk=first.pk).update(created_at=timezone.now() - timedelta(hours=3))
-        second = self.pay('FULL', 'tab-2', 'order_2')
+        second = self.pay('FULL', 'tab-2')
         self.assertNotEqual(second.pk, first.pk)
         services.mark_succeeded(first.pk, 'pay_1')
         services.mark_succeeded(second.pk, 'pay_2')
@@ -94,61 +147,45 @@ class PaymentFlowTests(TenantTestCase):
         self.assertEqual(sum(r.amount for r in Refund.objects.all()), second.amount)
         self.assertTrue(SecurityEvent.objects.filter(kind='payment_overpaid').exists())
 
-    def test_webhook_for_a_different_amount_is_not_recorded(self):
-        from core.models import SecurityEvent
-        p = self.pay('ADVANCE', 'p1', 'order_9')
-        body = json.dumps({'id': 'evt_amt', 'event': 'payment.captured', 'payload': {'payment': {'entity': {
-            'id': 'pay_1', 'order_id': 'order_9', 'amount': 100, 'currency': 'INR'}}}}).encode()
-        sig = hmac.new(SECRET.encode(), body, hashlib.sha256).hexdigest()
-        services.handle_webhook(body, sig, json.loads(body))
-        p.refresh_from_db()
-        self.assertEqual(p.status, Payment.Status.CREATED)
-        self.assertTrue(SecurityEvent.objects.filter(kind='payment_amount_mismatch').exists())
-
-    def test_a_webhook_that_failed_is_processed_when_razorpay_retries(self):
-        p = self.pay('ADVANCE', 'p1', 'order_9')
-        body = webhook_body('payment.captured', 'order_9', eid='evt_retry')
-        sig = hmac.new(SECRET.encode(), body, hashlib.sha256).hexdigest()
+    def test_a_webhook_that_failed_is_processed_when_cashfree_retries(self):
+        p = self.pay('ADVANCE', 'p1')
         with mock.patch('payments.services.mark_succeeded', side_effect=RuntimeError('database blip')):
             with self.assertRaises(RuntimeError):
-                services.handle_webhook(body, sig, json.loads(body))
-        event = PaymentGatewayEvent.objects.get(event_id='evt_retry')
+                self.webhook(p, cashfree_attempt(p))
+        event = PaymentGatewayEvent.objects.get()
         self.assertIsNone(event.processed_at)
         self.assertIn('database blip', event.error)
-        self.assertEqual(services.handle_webhook(body, sig, json.loads(body)), 'processed')
-        self.assertEqual(services.handle_webhook(body, sig, json.loads(body)), 'duplicate')
+        self.assertEqual(self.webhook(p, cashfree_attempt(p)), 'processed')
+        self.assertEqual(self.webhook(p, cashfree_attempt(p)), 'duplicate')
         p.refresh_from_db()
         self.assertEqual((p.status, p.allocations.count()), (Payment.Status.SUCCEEDED, 2))
 
     def test_duplicate_webhook_is_ignored(self):                                # scenario 10
-        self.pay('ADVANCE', 'p1', 'order_9')
-        body = webhook_body('payment.captured', 'order_9')
-        sig = hmac.new(SECRET.encode(), body, hashlib.sha256).hexdigest()
-        self.assertEqual(services.handle_webhook(body, sig, json.loads(body)), 'processed')
-        self.assertEqual(services.handle_webhook(body, sig, json.loads(body)), 'duplicate')
+        p = self.pay('ADVANCE', 'p1')
+        self.assertEqual(self.webhook(p, cashfree_attempt(p)), 'processed')
+        self.assertEqual(self.webhook(p, cashfree_attempt(p)), 'duplicate')
         self.assertEqual(PaymentGatewayEvent.objects.count(), 1)
-        self.assertEqual(Payment.objects.get(gateway_order_id='order_9').allocations.count(), 2)
+        self.assertEqual(Payment.objects.get(pk=p.pk).allocations.count(), 2)
 
     def test_bad_webhook_signature_rejected(self):
-        self.pay('ADVANCE', 'p1', 'order_9')
-        body = webhook_body('payment.captured', 'order_9')
+        p = self.pay('ADVANCE', 'p1')
         with self.assertRaises(PermissionError):
-            services.handle_webhook(body, 'deadbeef', json.loads(body))
-        self.assertEqual(Payment.objects.get(gateway_order_id='order_9').status, Payment.Status.CREATED)
+            self.webhook(p, cashfree_attempt(p), signature='bm90IHRoZSByaWdodCBzaWduYXR1cmU=')
+        self.assertEqual(Payment.objects.get(pk=p.pk).status, Payment.Status.CREATED)
+
+    def test_signature_is_checked_over_the_raw_body(self):
+        from . import gateway
+        body, ts, sig = cashfree_webhook('GH-1', {'payment_status': 'SUCCESS', 'payment_amount': 2500.0})
+        self.assertTrue(gateway.verify_webhook_signature(body, ts, sig))
+        self.assertFalse(gateway.verify_webhook_signature(body.replace(b'2500.0', b'2500'), ts, sig))   # re-serialised
+        self.assertFalse(gateway.verify_webhook_signature(body, str(int(ts) + 1), sig))                  # other timestamp
 
     def test_failed_event_never_overwrites_success(self):
-        p = self.pay('ADVANCE', 'p1', 'o1')
+        p = self.pay('ADVANCE', 'p1')
         services.mark_succeeded(p.pk, 'pay_1')
         services.mark_failed(p.pk, 'late failure event')
         p.refresh_from_db()
         self.assertEqual(p.status, Payment.Status.SUCCEEDED)
-
-    def test_bad_checkout_signature_rejected(self):
-        p = self.pay('ADVANCE', 'p1', 'o1')
-        with self.assertRaises(BookingError):
-            services.confirm_from_client(self.user, p.pk, 'pay_x', 'wrong')
-        p.refresh_from_db()
-        self.assertEqual(p.status, Payment.Status.CREATED)
 
     def test_manual_payment_needs_second_person_verification(self):             # scenario 11
         staff1, staff2 = make_user('+919000000001', kind='ADMIN', is_staff=True), make_user('+919000000002', kind='ADMIN', is_staff=True)
@@ -166,17 +203,23 @@ class PaymentFlowTests(TenantTestCase):
             services.record_manual_payment(staff, self.order, PaymentKind.ADVANCE, Decimal('1.00'), 'oops')
 
     def test_partial_refund_for_one_booking(self):                              # scenarios 7 & 8
-        services.mark_succeeded(self.pay('ADVANCE', 'p1', 'o1').pk, 'pay_1')
+        services.mark_succeeded(self.pay('ADVANCE', 'p1').pk, 'pay_1')
         b1 = self.order.bookings.get(schedule=self.s1)
         cancel_booking(b1, self.user, 'change of plans')
         r = Refund.objects.get(booking=b1)
         self.assertEqual(r.amount, Decimal('1500.00'))                           # 100% tier (20 days out) of the 1500 advance
         self.assertFalse(Refund.objects.filter(booking__schedule=self.s2).exists())
         services.approve_refund(make_user('+919000000003', kind='ADMIN', is_staff=True), r)
-        with mock.patch('payments.gateway.create_refund', return_value='rfnd_1'):
+        with mock.patch('payments.gateway.create_refund', return_value={'cf_refund_id': '77', 'refund_status': 'PENDING'}) as create:
             services.process_refund(r.pk)
         rt = RefundTransaction.objects.get(refund=r)
-        self.assertEqual((rt.amount, rt.gateway_refund_id), (Decimal('1500.00'), 'rfnd_1'))
+        self.assertEqual(rt.amount, Decimal('1500.00'))
+        self.assertTrue(rt.gateway_refund_id.startswith('GH-R-'))
+        self.assertEqual(create.call_args.kwargs['order_id'], Payment.objects.get(allocations__booking=b1).gateway_order_id)
+        self.assertEqual(Refund.objects.get(pk=r.pk).status, Refund.Status.PROCESSING)   # the bank hasn't finished yet
+        with mock.patch('payments.gateway.get_refund', return_value={'refund_status': 'SUCCESS', 'refund_arn': 'ARN1'}):
+            services.reconcile_refund(rt.gateway_refund_id)
+        self.assertEqual(Refund.objects.get(pk=r.pk).status, Refund.Status.PROCESSED)
 
     def test_invoice_uses_snapshot_and_credit_note_numbers_are_gapless(self):
         make_entity()

@@ -13,7 +13,6 @@ from rest_framework.views import APIView
 
 from core.security import get_client_ip
 from operations.models import ParticipantWaiverAcceptance, SafetyWaiver
-from payments import gateway, services as pay
 from payments.models import Refund
 from . import models as m
 from . import serializers as s
@@ -127,33 +126,6 @@ class CheckoutViewSet(viewsets.ReadOnlyModelViewSet):
             return fail(e, 409 if e.code == 'checkout_unavailable' else 400)
         m.CartItem.objects.filter(cart__user=request.user, schedule_id__in=[l.schedule_id for l in lines]).delete()
         return Response(s.CheckoutSerializer(order).data, status=201)
-
-    @extend_schema(tags=['Payments'], request=s.PayRequestSerializer)
-    @action(detail=True, methods=['post'])
-    def pay(self, request, pk=None):
-        """Create a Razorpay order for the advance (or balance) of some/all bookings in this checkout."""
-        order = self.get_object()
-        ser = s.PayRequestSerializer(data=request.data)
-        ser.is_valid(raise_exception=True)
-        key = request.headers.get('Idempotency-Key') or str(uuid.uuid4())
-        try:
-            p = pay.start_online_payment(request.user, order, ser.validated_data['kind'], key, ser.validated_data.get('bookings'))
-        except (BookingError, gateway.GatewayError) as e:
-            return Response({'status': 'error', 'message': str(e)}, status=400 if isinstance(e, BookingError) else 502)
-        return Response({'payment': str(p.pk), 'order_id': p.gateway_order_id, 'amount': p.amount, 'currency': p.currency,
-                         'key_id': __import__('django.conf', fromlist=['settings']).settings.RAZORPAY_KEY_ID})
-
-    @extend_schema(tags=['Payments'], request=s.ConfirmPaymentSerializer)
-    @action(detail=True, methods=['post'])
-    def confirm(self, request, pk=None):
-        self.get_object()
-        ser = s.ConfirmPaymentSerializer(data=request.data)
-        ser.is_valid(raise_exception=True)
-        try:
-            p = pay.confirm_from_client(request.user, ser.validated_data['payment'], ser.validated_data['razorpay_payment_id'], ser.validated_data['razorpay_signature'])
-        except BookingError as e:
-            return fail(e)
-        return Response({'status': p.status})
 
     @extend_schema(tags=['Checkout'])
     @action(detail=True, methods=['post'], url_path='complete-free')

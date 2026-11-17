@@ -2,7 +2,6 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from drf_spectacular.utils import extend_schema
 from rest_framework import status, viewsets
 from django.db.models import Q
-from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -56,9 +55,9 @@ class EventViewSet(LangMixin, viewsets.ReadOnlyModelViewSet):
 
 
 class EventBookingCreateView(APIView):
-    """Holds slots for an individual or group on a published event date. Staff confirm the booking afterwards."""
-    permission_classes = [AllowAny]
-    authentication_classes = []
+    """A signed-in customer books places on a published event date. The places are held while they pay the advance
+    online (POST /payments/cashfree/create-order/); a verified payment confirms the booking. Free events confirm at once."""
+    permission_classes = [IsAuthenticated]
     throttle_classes = [TrustedScopedRateThrottle]
     throttle_scope = 'event_booking'
 
@@ -69,8 +68,10 @@ class EventBookingCreateView(APIView):
         data.is_valid(raise_exception=True)
         v = data.validated_data
         try:
+            user = request.user
             booking = create_event_booking(
-                event_slug=v['event'], schedule_id=v['schedule'], name=v['name'], phone=v['phone'], email=v.get('email', ''),
+                event_slug=v['event'], schedule_id=v['schedule'], name=v.get('name') or user.full_name or user.phone_number,
+                phone=user.phone_number, email=v.get('email') or user.email or '', registrant=user,
                 participant_count=v['participant_count'], note=v.get('note', ''), coupon_code=v.get('coupon', '').strip())
         except DjangoValidationError as exc:
             detail = exc.message_dict if hasattr(exc, 'error_dict') else {'detail': exc.messages}
@@ -110,57 +111,6 @@ class EventCouponPreviewView(APIView):
             return Response({'code': exc.message}, status=status.HTTP_400_BAD_REQUEST)
         discount = event_discount(coupon, before)
         return Response({'code': coupon.code, 'discount': discount, 'total_before': before, 'total_after': before - discount})
-
-
-class EventBookingStatusView(APIView):
-    """Look up one booking by reference. The phone used to book must match, so references cannot be enumerated."""
-    permission_classes = [AllowAny]
-    authentication_classes = []
-    throttle_classes = [TrustedScopedRateThrottle]
-    throttle_scope = 'booking_lookup'
-
-    @extend_schema(tags=['Events'], responses=s.EventBookingSerializer)
-    def post(self, request, reference):
-        from accounts.models import normalize_phone
-        not_found = Response({'detail': 'No booking matches that reference and phone number.'}, status=status.HTTP_404_NOT_FOUND)
-        try:
-            phone = normalize_phone(request.data.get('phone', ''))
-        except DjangoValidationError:
-            return not_found
-        booking = (m.EventRegistration.objects.select_related('schedule__event')
-                   .filter(reference=reference.strip().upper(), contact_phone=phone).first())
-        if booking is None:
-            return not_found
-        return Response(s.EventBookingSerializer(booking, context={'request': request, 'lang': request.query_params.get('lang', 'en')}).data)
-
-
-class EventPaymentProofView(APIView):
-    """The customer uploads their UPI payment screenshot. Reference + booking phone must match."""
-    permission_classes = [AllowAny]
-    authentication_classes = []
-    throttle_classes = [TrustedScopedRateThrottle]
-    throttle_scope = 'payment_proof'
-    parser_classes = [MultiPartParser, FormParser]
-
-    @extend_schema(tags=['Events'], request={'multipart/form-data': s.EventPaymentProofSerializer}, responses=s.EventBookingSerializer)
-    def post(self, request, reference):
-        from .event_booking import PaymentStorageError, submit_payment_proof
-        data = s.EventPaymentProofSerializer(data=request.data)
-        data.is_valid(raise_exception=True)
-        v = data.validated_data
-        try:
-            booking = submit_payment_proof(reference=reference, phone=v['phone'], screenshot=v['screenshot'], utr=v.get('utr', ''))
-        except PaymentStorageError:
-            return Response({'detail': "We couldn't save your screenshot right now. Please try again in a few minutes, "
-                                       'or send it to us on WhatsApp with your booking reference.'},
-                            status=status.HTTP_503_SERVICE_UNAVAILABLE)
-        except DjangoValidationError as exc:
-            detail = exc.message_dict if hasattr(exc, 'error_dict') else {'detail': exc.messages}
-            code = status.HTTP_404_NOT_FOUND if 'No booking matches' in str(detail) else status.HTTP_400_BAD_REQUEST
-            if isinstance(detail.get('detail'), list):
-                detail['detail'] = detail['detail'][0]
-            return Response(detail, status=code)
-        return Response(s.EventBookingSerializer(booking, context={'request': request, 'lang': request.query_params.get('lang', 'en')}).data)
 
 
 def owned_by(user):

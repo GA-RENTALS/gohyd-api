@@ -1,4 +1,5 @@
-"""Payments page: trip payments, event UPI proofs, trip refunds and event refunds (sent back by UPI), with a money summary, date filter and CSV export.
+"""Payments page: online (Cashfree) and staff-recorded payments for trips and events, refunds, and the history of event
+payments made by UPI QR before online payment (proofs and hand-sent refunds), with a money summary, date filter and CSV export.
 
 GET /admin/lists/payments/?type=trip|event|refund|event_refund&status=…&search=…&from=YYYY-MM-DD&to=YYYY-MM-DD&page=N[&export=csv]
 """
@@ -34,7 +35,8 @@ REFUND_GROUPS = {
 }
 
 TRIP_CSV = [('Date', 'created_at'), ('Paid by', 'name'), ('Phone', 'phone'), ('Amount', 'amount'), ('Status', 'status'),
-            ('Type', 'kind'), ('Method', 'method'), ('Reference', 'reference'), ('Trip', 'title'), ('Bookings', 'bookings_text')]
+            ('Type', 'kind'), ('Method', 'method'), ('For', 'for'), ('Trip or event', 'title'), ('Bookings', 'bookings_text'),
+            ('Cashfree order', 'gateway_order_id'), ('Cashfree payment', 'gateway_payment_id'), ('Reference', 'reference')]
 EVENT_CSV = [('Booked', 'created_at'), ('Name', 'name'), ('Phone', 'phone'), ('Event', 'title'), ('Reference', 'reference'),
              ('People', 'people'), ('Amount', 'total'), ('Status', 'status_label'), ('UPI reference', 'utr')]
 EVENT_REFUND_GROUPS = {
@@ -44,7 +46,8 @@ EVENT_REFUND_GROUPS = {
 }
 
 REFUND_CSV = [('Requested', 'created_at'), ('Customer', 'name'), ('Phone', 'phone'), ('Amount', 'amount'), ('Status', 'status'),
-              ('Booking', 'booking'), ('Trip', 'title'), ('Reason', 'reason'), ('Approved by', 'approved_by')]
+              ('For', 'for'), ('Booking', 'booking'), ('Trip or event', 'title'), ('Reason', 'reason'), ('Approved by', 'approved_by'),
+              ('Cashfree refunds', 'gateway_refund_ids')]
 EVENT_REFUND_CSV = [('Cancelled', 'created_at'), ('Customer', 'name'), ('Phone', 'phone'), ('Event', 'title'), ('Booking', 'reference'),
                     ('Paid', 'paid'), ('Refund', 'amount'), ('Status', 'status_label'), ('UPI reference', 'upi_reference'),
                     ('Cancelled by', 'cancelled_by'), ('Reason', 'reason'), ('Note', 'note'), ('Recorded by', 'recorded_by')]
@@ -82,11 +85,14 @@ class PaymentListView(APIView):
     @staticmethod
     def _trip(request, search, start, end):
         _require_model_permission(request, _resolve('payments'), 'view')
-        qs = (Payment.objects.exclude(status=Payment.Status.CREATED).select_related('payer')
+        # Open Cashfree orders nobody has paid yet (CREATED) aren't payments; they stay out of the list.
+        qs = (Payment.objects.exclude(status=Payment.Status.CREATED).select_related('payer', 'event_registration__schedule')
               .prefetch_related('allocations__booking__schedule').order_by('-created_at'))
         if search:
             qs = qs.filter(Q(manual_reference__icontains=search) | Q(payer__full_name__icontains=search)
-                           | Q(payer__phone_number__icontains=search) | Q(allocations__booking__reference__icontains=search)).distinct()
+                           | Q(payer__phone_number__icontains=search) | Q(allocations__booking__reference__icontains=search)
+                           | Q(event_registration__reference__icontains=search) | Q(gateway_order_id__icontains=search)
+                           | Q(gateway_payment_id__icontains=search)).distinct()
         qs = in_range(qs, 'created_at', start, end)
         groups = {key: Q(status__in=statuses) for key, statuses in TRIP_GROUPS.items()}
         return qs, groups, trip_payment_rows, TRIP_CSV
@@ -111,10 +117,15 @@ class PaymentListView(APIView):
     @staticmethod
     def _refund(request, search, start, end):
         _require_model_permission(request, _resolve('refunds'), 'view')
-        qs = Refund.objects.select_related('booking__primary_booker', 'booking__schedule', 'approved_by').order_by('-created_at')
+        qs = (Refund.objects.select_related('booking__primary_booker', 'booking__schedule', 'event_registration__schedule',
+                                            'event_registration__registrant', 'approved_by')
+              .prefetch_related('transactions').order_by('-created_at'))
         if search:
             qs = qs.filter(Q(booking__reference__icontains=search) | Q(booking__primary_booker__full_name__icontains=search)
-                           | Q(booking__primary_booker__phone_number__icontains=search) | Q(reason__icontains=search))
+                           | Q(booking__primary_booker__phone_number__icontains=search) | Q(reason__icontains=search)
+                           | Q(event_registration__reference__icontains=search) | Q(event_registration__contact_name__icontains=search)
+                           | Q(event_registration__contact_phone__icontains=search)
+                           | Q(transactions__gateway_refund_id__icontains=search)).distinct()
         qs = in_range(qs, 'created_at', start, end)
         groups = {key: Q(status__in=statuses) for key, statuses in REFUND_GROUPS.items()}
         return qs, groups, refund_rows, REFUND_CSV
@@ -150,33 +161,52 @@ class PaymentListView(APIView):
 # ---------- rows ----------
 
 def trip_payment_rows(payments):
-    titles = title_map(Trip, {a.booking.schedule.trip_id for p in payments for a in p.allocations.all()})
+    """Payments for trips (allocated across a checkout's bookings) and for event bookings, one row each."""
+    trip_titles = title_map(Trip, {a.booking.schedule.trip_id for p in payments for a in p.allocations.all()})
+    event_titles = title_map(Event, {p.event_registration.schedule.event_id for p in payments if p.event_registration_id})
     rows = []
     for p in payments:
-        allocations = list(p.allocations.all())
-        bookings = sorted({a.booking.reference for a in allocations})
+        if p.event_registration_id:
+            reg = p.event_registration
+            target = {'for': 'event', 'bookings': [reg.reference], 'title': event_titles.get(reg.schedule.event_id, ''),
+                      'parent_id': str(reg.schedule.event_id)}
+        else:
+            allocations = list(p.allocations.all())
+            target = {'for': 'trip', 'bookings': sorted({a.booking.reference for a in allocations}),
+                      'title': ', '.join(sorted({trip_titles.get(a.booking.schedule.trip_id, '') for a in allocations} - {''})),
+                      'parent_id': next((str(a.booking.schedule.trip_id) for a in allocations), None)}
         rows.append({
             'id': str(p.pk), 'amount': _money(p.amount), 'status': p.status, 'kind': p.kind, 'method': p.method,
             'reference': p.manual_reference, 'name': p.payer.full_name or p.payer.phone_number, 'phone': p.payer.phone_number,
-            'customer_id': str(p.payer_id), 'bookings': bookings, 'bookings_text': ', '.join(bookings),
-            'title': ', '.join(sorted({titles.get(a.booking.schedule.trip_id, '') for a in allocations} - {''})),
-            'parent_id': next((str(a.booking.schedule.trip_id) for a in allocations), None),
+            'customer_id': str(p.payer_id), **target, 'bookings_text': ', '.join(target['bookings']),
+            'gateway_order_id': p.gateway_order_id or '', 'gateway_payment_id': p.gateway_payment_id or '',
             'failure_reason': p.failure_reason, 'created_at': _iso(p.created_at),
         })
     return rows
 
 
 def refund_rows(refunds):
-    titles = title_map(Trip, {r.booking.schedule.trip_id for r in refunds})
-    return [{
-        'id': str(r.pk), 'amount': _money(r.amount), 'status': r.status, 'reason': r.reason,
-        'booking': r.booking.reference, 'booking_id': str(r.booking_id),
-        'name': r.booking.primary_booker.full_name or r.booking.primary_booker.phone_number,
-        'phone': r.booking.primary_booker.phone_number, 'customer_id': str(r.booking.primary_booker_id),
-        'title': titles.get(r.booking.schedule.trip_id, ''), 'parent_id': str(r.booking.schedule.trip_id),
-        'approved_by': (r.approved_by.full_name or r.approved_by.phone_number) if r.approved_by else '',
-        'created_at': _iso(r.created_at), 'updated_at': _iso(r.updated_at),
-    } for r in refunds]
+    trip_titles = title_map(Trip, {r.booking.schedule.trip_id for r in refunds if r.booking_id})
+    event_titles = title_map(Event, {r.event_registration.schedule.event_id for r in refunds if r.event_registration_id})
+    rows = []
+    for r in refunds:
+        if r.booking_id:
+            b, who = r.booking, r.booking.primary_booker
+            target = {'for': 'trip', 'booking': b.reference, 'booking_id': str(b.pk), 'name': who.full_name or who.phone_number,
+                      'phone': who.phone_number, 'customer_id': str(who.pk), 'title': trip_titles.get(b.schedule.trip_id, ''),
+                      'parent_id': str(b.schedule.trip_id)}
+        else:
+            reg = r.event_registration
+            target = {'for': 'event', 'booking': reg.reference, 'booking_id': str(reg.pk), 'name': reg.contact_name or '—',
+                      'phone': reg.contact_phone, 'customer_id': str(reg.registrant_id) if reg.registrant_id else None,
+                      'title': event_titles.get(reg.schedule.event_id, ''), 'parent_id': str(reg.schedule.event_id)}
+        rows.append({
+            'id': str(r.pk), 'amount': _money(r.amount), 'status': r.status, 'reason': r.reason, **target,
+            'approved_by': (r.approved_by.full_name or r.approved_by.phone_number) if r.approved_by else '',
+            'gateway_refund_ids': ', '.join(t.gateway_refund_id for t in r.transactions.all() if t.gateway_refund_id),
+            'created_at': _iso(r.created_at), 'updated_at': _iso(r.updated_at),
+        })
+    return rows
 
 
 def event_refund_rows(refunds):
@@ -218,11 +248,12 @@ def payment_summary(request):
     out = {}
 
     if see_trip or see_event:
-        trip = (Payment.objects.filter(status=Payment.Status.SUCCEEDED, created_at__gte=month_start)
-                .aggregate(t=Sum('amount'))['t'] or ZERO) if see_trip else ZERO
-        event = (EventRegistration.objects.filter(status='CONFIRMED', confirmed_at__gte=month_start)
+        # Online and staff-recorded payments (trips and events), plus event bookings paid by UPI QR before online payment.
+        online = (Payment.objects.filter(status=Payment.Status.SUCCEEDED, created_at__gte=month_start)
+                  .aggregate(t=Sum('amount'))['t'] or ZERO) if see_trip else ZERO
+        by_qr = (EventRegistration.objects.filter(status='CONFIRMED', confirmed_at__gte=month_start, payments__isnull=True)
                  .aggregate(t=Sum('total_amount'))['t'] or ZERO) if see_event else ZERO
-        out['received_month'] = {'amount': _money(trip + event)}
+        out['received_month'] = {'amount': _money(online + by_qr)}
 
     to_verify = {'count': 0, 'amount': ZERO}
     if see_trip:

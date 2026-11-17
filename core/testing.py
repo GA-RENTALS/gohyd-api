@@ -62,3 +62,26 @@ class TenantTestCase(TestCase):
         from tenancy.context import reset_current_tenant
         reset_current_tenant(self._tenant_token)
         super()._post_teardown()
+
+
+# ---------- Cashfree stand-ins (payments.gateway is never called for real in tests) ----------
+
+def fake_cashfree_order(**kw):
+    """What Cashfree answers to Create Order: patch payments.gateway.create_order with side_effect=fake_cashfree_order."""
+    return {'cf_order_id': 1, 'order_id': kw['order_id'], 'order_status': 'ACTIVE', 'payment_session_id': f"session_{kw['order_id']}"}
+
+
+def cashfree_attempt(payment, status='SUCCESS', amount=None, cf_payment_id=None):
+    """One entry of Get Payments for an Order. Each payment gets its own Cashfree id unless one is given."""
+    return {'cf_payment_id': cf_payment_id or str(payment.pk.int % 10**10), 'payment_status': status, 'payment_currency': 'INR', 'payment_group': 'upi',
+            'payment_amount': float(payment.amount if amount is None else amount), 'payment_time': '2026-11-17T12:00:00+05:30',
+            'payment_message': 'Transaction Success' if status == 'SUCCESS' else 'Payment failed'}
+
+
+def cashfree_webhook(order_id, attempt, event_type='PAYMENT_SUCCESS_WEBHOOK', timestamp='1763380800'):
+    """(raw body, timestamp, signature) of a Cashfree payment notification, signed with settings.CASHFREE_SECRET_KEY."""
+    import json
+    from payments import gateway
+    body = json.dumps({'data': {'order': {'order_id': order_id, 'order_currency': 'INR'}, 'payment': attempt},
+                       'event_time': '2026-11-17T12:00:01+05:30', 'type': event_type}).encode()
+    return body, timestamp, gateway.sign_webhook(body, timestamp)

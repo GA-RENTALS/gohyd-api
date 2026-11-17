@@ -6,6 +6,7 @@ from datetime import timedelta
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
+from corsheaders.defaults import default_headers as default_cors_headers
 from django.core.exceptions import ImproperlyConfigured
 from django.urls import reverse_lazy
 from dotenv import load_dotenv
@@ -206,9 +207,19 @@ OTP_MAX_ATTEMPTS = int(os.getenv('OTP_MAX_ATTEMPTS', '5'))
 OTP_LOG_IN_CONSOLE = DEBUG and not os.getenv('WHATSAPP_API_URL')
 OTP_SEND_INLINE = DEBUG   # development: send the code during the request, so no Celery worker is needed
 
-RAZORPAY_KEY_ID = os.getenv('RAZORPAY_KEY_ID', '')
-RAZORPAY_KEY_SECRET = os.getenv('RAZORPAY_KEY_SECRET', '')
-RAZORPAY_WEBHOOK_SECRET = os.getenv('RAZORPAY_WEBHOOK_SECRET', '')
+# Cashfree (payments.gateway). The merchant account is Go Adventure India Pvt. Ltd.'s, shared with goadventure.in, so
+# every order this site creates starts with CASHFREE_ORDER_PREFIX and carries a `brand` tag: that keeps GoHyderabad's
+# payments apart from GoAdventure's in the Cashfree dashboard and reports. The secret key never leaves the backend.
+CASHFREE_APP_ID = os.getenv('CASHFREE_APP_ID', '')
+CASHFREE_SECRET_KEY = os.getenv('CASHFREE_SECRET_KEY', '')
+CASHFREE_ENV = os.getenv('CASHFREE_ENV', 'sandbox').strip().lower()          # sandbox | production
+if CASHFREE_ENV not in ('sandbox', 'production'):
+    raise ImproperlyConfigured('CASHFREE_ENV must be "sandbox" or "production".')
+CASHFREE_API_VERSION = os.getenv('CASHFREE_API_VERSION', '2025-01-01')
+CASHFREE_ORDER_PREFIX = os.getenv('CASHFREE_ORDER_PREFIX', 'GH')
+PAYMENT_BRAND = os.getenv('PAYMENT_BRAND', 'GOHYDERABAD')
+# Where Cashfree sends payment notifications: this API's public HTTPS address (…/api/v1/payments/cashfree/webhook/).
+PUBLIC_API_ORIGIN = os.getenv('PUBLIC_API_ORIGIN', '').rstrip('/')
 
 CACHES = {'default': {'BACKEND': 'django.core.cache.backends.redis.RedisCache',
                       'LOCATION': os.getenv('REDIS_URL', 'redis://127.0.0.1:6379/1')}}
@@ -228,11 +239,15 @@ CELERY_BEAT_SCHEDULE = {
     'expire-unpaid-checkouts': {'task': 'bookings.tasks.expire_unpaid_checkouts', 'schedule': 300.0},
     'publish-due-content': {'task': 'content.tasks.publish_due', 'schedule': 300.0},
     'expire-event-holds': {'task': 'trips.tasks.expire_event_holds', 'schedule': 3600.0},
+    'reconcile-with-cashfree': {'task': 'payments.tasks.reconcile_with_cashfree', 'schedule': 600.0},
 }
 
 CORS_ALLOWED_ORIGINS = [o.strip() for o in os.getenv('CORS_ALLOWED_ORIGINS', '').split(',') if o.strip()]
 CORS_ALLOW_CREDENTIALS = False
 CORS_EXPOSE_HEADERS = ['Content-Disposition']   # the admin reads the file name of CSV exports
+# The website sends Idempotency-Key when it creates a checkout or a payment order, so a retry can't double-book or
+# double-charge. When the site and the API are on different origins (local development), the browser must be allowed to.
+CORS_ALLOW_HEADERS = (*default_cors_headers, 'idempotency-key')
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (

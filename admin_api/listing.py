@@ -179,13 +179,21 @@ def event_booking_rows(regs, titles, request, duplicate_utrs=frozenset()):
             'id': str(r.pk), 'type': 'event', 'reference': r.reference, 'name': r.contact_name or '—', 'phone': r.contact_phone,
             'customer_id': str(r.registrant_id) if r.registrant_id else None,
             'title': titles.get(r.schedule.event_id, ''), 'parent_id': str(r.schedule.event_id), 'starts_at': _iso(r.schedule.starts_at),
-            'people': r.participant_count, 'total': _money(r.total_amount),
-            'paid': _money(r.total_amount if st == 'CONFIRMED' else ZERO), 'due': _money(r.total_amount if st == 'PENDING' else ZERO),
+            'people': r.participant_count, 'total': _money(r.total_amount), **_event_money(r, st),
             'status': st, 'status_label': EventRegistration.Status(st).label, 'bucket': _event_bucket(st),
             'proof_url': proof_url(r, request), 'utr': r.payment_utr, 'utr_duplicate': r.payment_utr in duplicate_utrs,
             'note': r.customer_note, 'staff_note': r.staff_note, 'created_at': _iso(r.created_at),
         })
     return rows
+
+
+def _event_money(r, status):
+    """Paid and still due on an event booking: online payments, or (paid by UPI QR before online payment) the full price."""
+    if r._paid_by_qr():
+        return {'paid': _money(r.total_amount if status == 'CONFIRMED' else ZERO), 'due': _money(ZERO)}
+    paid = r.paid_online()
+    due = ZERO if status in ('CANCELLED', 'EXPIRED') else max(ZERO, r.total_amount - paid)
+    return {'paid': _money(paid), 'due': _money(due)}
 
 
 def event_status_q(bucket, now):
