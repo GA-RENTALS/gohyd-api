@@ -60,7 +60,7 @@ class EventOnlinePaymentTests(TenantTestCase):
         self.assertEqual((session['amount'], session['mode']), ('600.00', 'sandbox'))
         self.assertTrue(session['payment_session_id'])
         self.assertEqual(self.order_call['tags']['booking_type'], 'EVENT')
-        self.assertEqual(self.order_call['return_url'], f"https://site.example.com/account?order_id={session['order_id']}")
+        self.assertEqual(self.order_call['return_url'], f"https://site.example.com/booking/thank-you?order_id={session['order_id']}")
 
         verified = self._return_from_cashfree(session)
         self.assertEqual((verified.status_code, verified.data['status'], verified.data['event_booking']),

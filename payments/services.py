@@ -42,7 +42,7 @@ def amounts_due(bookings, kind):
 
 
 @transaction.atomic
-def start_online_payment(user, checkout: CheckoutOrder, kind: str, idempotency_key: str, booking_ids=None, return_path=None):
+def start_online_payment(user, checkout: CheckoutOrder, kind: str, idempotency_key: str, booking_ids=None):
     """Create (or replay) a Cashfree order covering one or several bookings of a trip checkout.
 
     A second request for the same amount (another tab, a retry after a failed attempt) gets the order that is still
@@ -73,8 +73,7 @@ def start_online_payment(user, checkout: CheckoutOrder, kind: str, idempotency_k
                                idempotency_key=idempotency_key)
     # stash the allocation plan so verification can allocate without trusting the client
     _txn(p, 'created', Payment.Status.CREATED, raw={'plan': plan})
-    _open_gateway_order(p, user, return_path=return_path or f'/checkout/{checkout.pk}', booking_type='TRIP',
-                        reference=checkout.reference)
+    _open_gateway_order(p, user, booking_type='TRIP', reference=checkout.reference)
     return p
 
 
@@ -108,7 +107,7 @@ def start_event_payment(user, registration, kind: str, idempotency_key: str):
         hold = timezone.now() + timedelta(minutes=checkout_hold_minutes())
         reg.reserved_until = min(max(reg.reserved_until or hold, hold), max(reg.schedule.starts_at, hold))
         reg.save(update_fields=['reserved_until', 'updated_at'])
-    _open_gateway_order(p, user, return_path='/account', booking_type='EVENT', reference=reg.reference)
+    _open_gateway_order(p, user, booking_type='EVENT', reference=reg.reference)
     return p
 
 
@@ -132,7 +131,12 @@ def order_id_for(payment):
     return f'{settings.CASHFREE_ORDER_PREFIX}-{payment.pk.hex[:24]}'
 
 
-def _open_gateway_order(p, user, *, return_path, booking_type, reference):
+# Where Cashfree sends the customer after paying (or giving up): the website's thank-you page, which asks the server
+# what happened (GET /payments/cashfree/verify/<order_id>/) and shows the booking, or how to try again.
+RETURN_PATH = '/booking/thank-you'
+
+
+def _open_gateway_order(p, user, *, booking_type, reference):
     """Create the Cashfree order for a new payment and keep its session id for the browser."""
     order_id = order_id_for(p)
     customer = {'customer_id': f'{settings.CASHFREE_ORDER_PREFIX}{user.pk}', 'customer_phone': gateway.customer_phone(user.phone_number)}
@@ -140,11 +144,10 @@ def _open_gateway_order(p, user, *, return_path, booking_type, reference):
         customer['customer_name'] = user.full_name[:100]
     if user.email:
         customer['customer_email'] = user.email
-    separator = '&' if '?' in return_path else '?'
     notify = settings.PUBLIC_API_ORIGIN
     order = gateway.create_order(
         order_id=order_id, order_amount=p.amount, customer=customer,
-        return_url=f'{settings.FRONTEND_ORIGIN}{return_path}{separator}order_id={order_id}',
+        return_url=f'{settings.FRONTEND_ORIGIN}{RETURN_PATH}?order_id={order_id}',
         # Cashfree only calls https addresses; locally the return page's verification records the payment instead.
         notify_url=f'{notify}/api/v1/payments/cashfree/webhook/' if notify.startswith('https://') else '',
         tags={'brand': settings.PAYMENT_BRAND, 'booking_type': booking_type, 'reference': reference, 'payment_kind': p.kind},

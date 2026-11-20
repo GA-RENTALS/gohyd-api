@@ -31,8 +31,6 @@ class CreateOrderSerializer(serializers.Serializer):
     kind = serializers.ChoiceField(choices=PaymentKind.choices)
     bookings = serializers.ListField(child=serializers.UUIDField(), required=False,
                                      help_text='Trip bookings of the checkout to pay for (default: all).')
-    return_to = serializers.ChoiceField(choices=['checkout', 'account'], default='checkout',
-                                        help_text='Where Cashfree sends the customer back (trips; events return to the account).')
 
     def validate(self, attrs):
         if bool(attrs.get('checkout')) == bool(attrs.get('event_booking')):
@@ -60,8 +58,7 @@ class CreateOrderView(APIView):
                 checkout = CheckoutOrder.objects.filter(pk=v['checkout'], user=request.user).first()
                 if checkout is None:
                     return Response({'detail': 'Checkout not found.'}, status=status.HTTP_404_NOT_FOUND)
-                p = services.start_online_payment(request.user, checkout, v['kind'], key, v.get('bookings'),
-                                                  return_path='/account' if v['return_to'] == 'account' else None)
+                p = services.start_online_payment(request.user, checkout, v['kind'], key, v.get('bookings'))
             else:
                 reg = EventRegistration.objects.filter(reference=v['event_booking'].strip().upper(), registrant=request.user).first()
                 if reg is None:
@@ -82,13 +79,16 @@ class VerifyView(APIView):
 
     @extend_schema(tags=['Payments'])
     def get(self, request, order_id):
-        if not Payment.objects.filter(gateway_order_id=order_id, payer=request.user).exists():
+        p = Payment.objects.select_related('event_registration').filter(gateway_order_id=order_id, payer=request.user).first()
+        if p is None:
             return Response({'detail': 'Payment not found.'}, status=status.HTTP_404_NOT_FOUND)
         try:
             p, outcome = services.reconcile_order(order_id)
+            message = p.failure_reason if outcome != 'paid' else ''
         except gateway.GatewayError:
-            return Response({'status': 'pending', 'detail': "We couldn't check with Cashfree yet. Your booking updates as soon as it confirms."})
-        body = {'status': outcome, 'payment': str(p.pk), 'amount': str(p.amount), 'kind': p.kind, 'message': p.failure_reason if outcome != 'paid' else ''}
+            outcome, message = 'pending', "We couldn't check with Cashfree yet. Your booking updates as soon as it confirms."
+        # Which booking it was for, so the website can show it (or offer to try again) whatever the outcome.
+        body = {'status': outcome, 'payment': str(p.pk), 'amount': str(p.amount), 'kind': p.kind, 'message': message}
         if p.checkout_id:
             body['checkout'] = str(p.checkout_id)
         else:

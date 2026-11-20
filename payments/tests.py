@@ -57,7 +57,7 @@ class PaymentFlowTests(TenantTestCase):
         self.assertEqual(kwargs['order_amount'], Decimal('2500.00'))
         self.assertEqual(kwargs['tags']['brand'], 'GOHYDERABAD')
         self.assertEqual(kwargs['notify_url'], 'https://api.example.com/api/v1/payments/cashfree/webhook/')
-        self.assertEqual(kwargs['return_url'], f'https://site.example.com/checkout/{self.order.pk}?order_id={p.gateway_order_id}')
+        self.assertEqual(kwargs['return_url'], f'https://site.example.com/booking/thank-you?order_id={p.gateway_order_id}')
         self.assertEqual(p.gateway_session_id, f'session_{p.gateway_order_id}')
 
     def test_balance_paid_separately_before_departure(self):                    # scenario 6
