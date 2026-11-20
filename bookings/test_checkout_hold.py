@@ -8,7 +8,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from core.models import SecurityEvent
-from core.testing import TenantTestCase, make_trip, make_user
+from core.testing import TenantTestCase, make_trip, make_user, fake_cashfree_order
 from crm.models import Coupon, CouponRedemption
 from payments import services as payments
 from payments.models import Payment, Refund
@@ -30,7 +30,7 @@ def _seats(schedule):
     return TripSchedule.objects.get(pk=schedule.pk).seats_booked
 
 
-@override_settings(RAZORPAY_KEY_ID='k', RAZORPAY_KEY_SECRET='s')
+@override_settings(CASHFREE_APP_ID='k', CASHFREE_SECRET_KEY='s')
 class CheckoutHoldTests(TenantTestCase):
     def setUp(self):
         self.user = make_user()
@@ -40,7 +40,7 @@ class CheckoutHoldTests(TenantTestCase):
         return create_checkout(self.user, [CheckoutLine(self.schedule.pk, people)], key, **kw)
 
     def _start_payment(self, order, key='p1'):
-        with mock.patch('payments.gateway.create_order', return_value={'id': f'order_{key}'}):
+        with mock.patch('payments.gateway.create_order', side_effect=fake_cashfree_order):
             return payments.start_online_payment(self.user, order, 'ADVANCE', key)
 
     def test_unpaid_checkout_releases_its_seats_after_the_hold(self):

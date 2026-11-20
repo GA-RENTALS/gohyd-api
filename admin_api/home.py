@@ -30,7 +30,7 @@ from .views import AdminDashboardView, _access_log, _resolve
 # Payments page tab for each payment status (admin_api/payments.py STATUS groups).
 _PAYMENT_TAB = {Payment.Status.PENDING_VERIFICATION: 'pending', Payment.Status.SUCCEEDED: 'succeeded', Payment.Status.FAILED: 'failed'}
 
-# Razorpay retries a failed webhook on its own for a while; only then is it something for staff to look at.
+# Cashfree retries a failed webhook on its own for a while; only then is it something for staff to look at.
 FAILED_EVENT_GRACE = timedelta(minutes=15)
 
 
@@ -58,10 +58,16 @@ class HomeView(APIView):
         see_events = _can(request, 'event-registrations')
 
         def trip_money(lo, hi):
-            return Payment.objects.filter(status=Payment.Status.SUCCEEDED, created_at__gte=lo, created_at__lt=hi).aggregate(t=Sum('amount'))['t'] or ZERO
+            return (Payment.objects.filter(status=Payment.Status.SUCCEEDED, checkout__isnull=False, created_at__gte=lo, created_at__lt=hi)
+                    .aggregate(t=Sum('amount'))['t'] or ZERO)
 
         def event_money(lo, hi):
-            return EventRegistration.objects.filter(status='CONFIRMED', confirmed_at__gte=lo, confirmed_at__lt=hi).aggregate(t=Sum('total_amount'))['t'] or ZERO
+            """Online event payments, plus bookings paid by UPI QR before online payment (confirmed, with no payment rows)."""
+            online = (Payment.objects.filter(status=Payment.Status.SUCCEEDED, event_registration__isnull=False, created_at__gte=lo,
+                                             created_at__lt=hi).aggregate(t=Sum('amount'))['t'] or ZERO)
+            by_qr = (EventRegistration.objects.filter(status='CONFIRMED', confirmed_at__gte=lo, confirmed_at__lt=hi, payments__isnull=True)
+                     .aggregate(t=Sum('total_amount'))['t'] or ZERO)
+            return online + by_qr
 
         def bookings_between(lo, hi):
             n = 0
@@ -81,7 +87,7 @@ class HomeView(APIView):
         if see_pay or see_events:
             cur = (trip_money(month_start, now) if see_pay else ZERO) + (event_money(month_start, now) if see_events else ZERO)
             prev = (trip_money(prev_month_start, same_point_last_month) if see_pay else ZERO) + (event_money(prev_month_start, same_point_last_month) if see_events else ZERO)
-            kpis.append({'key': 'revenue', 'label': 'Revenue this month', 'value': _money(cur), 'format': 'money', 'delta': delta(cur, prev), 'hint': 'Trip payments received + confirmed event bookings'})
+            kpis.append({'key': 'revenue', 'label': 'Revenue this month', 'value': _money(cur), 'format': 'money', 'delta': delta(cur, prev), 'hint': 'Trip and event payments received'})
         if see_trips or see_events:
             cur, prev = bookings_between(month_start, now), bookings_between(prev_month_start, same_point_last_month)
             kpis.append({'key': 'bookings', 'label': 'Bookings this month', 'value': cur, 'format': 'number', 'delta': delta(cur, prev), 'hint': 'Trips and events, not counting cancelled'})
@@ -121,19 +127,13 @@ class HomeView(APIView):
                 'parent_id': next((str(a.booking.schedule.trip_id) for a in p.allocations.all()), None),
             } for p in items]}
         if staff_has_perm(request, 'payments.change_payment'):
-            # A Razorpay event that still fails after its own retries: the payment may not be recorded (NEXT.md item 2).
+            # A Cashfree event that still fails after its own retries: the payment may not be recorded (NEXT.md item 2).
             failing = (PaymentGatewayEvent.objects.filter(signature_valid=True, processed_at__isnull=True,
                                                           created_at__lte=now - FAILED_EVENT_GRACE)
                        .exclude(error='').order_by('created_at'))
             todo['failed_payment_events'] = {'count': failing.count(), 'items': [{
                 'id': str(e.pk), 'event_type': e.event_type, 'error': e.error, 'created_at': _iso(e.created_at),
             } for e in failing[:5]]}
-        if see_events:
-            qs = EventRegistration.objects.filter(event_status_q('awaiting', now)).select_related('schedule').order_by('-payment_submitted_at', 'created_at')
-            items = list(qs[:6])
-            titles = title_map(Event, {r.schedule.event_id for r in items})
-            todo['confirm_events'] = {'count': qs.count(), 'with_proof': qs.exclude(payment_screenshot='').count(),
-                                      'items': event_booking_rows(items, titles, request)}
         if see_trips:
             soon = Booking.objects.filter(status__in=TRIP_AWAITING, schedule__starts_at__gte=now, schedule__starts_at__lt=now + timedelta(days=14)).select_related('primary_booker', 'schedule').order_by('schedule__starts_at')
             rows = [r for r in trip_booking_rows(list(soon[:30]), title_map(Trip, {b.schedule.trip_id for b in soon[:30]})) if Decimal(r['due']) > 0]
@@ -157,13 +157,16 @@ class HomeView(APIView):
         start = today - timedelta(days=29)
         days = defaultdict(lambda: {'trips': ZERO, 'events': ZERO})
         if see_pay:
-            for r in (Payment.objects.filter(status=Payment.Status.SUCCEEDED, created_at__date__gte=start)
+            for r in (Payment.objects.filter(status=Payment.Status.SUCCEEDED, checkout__isnull=False, created_at__date__gte=start)
                       .annotate(d=TruncDate('created_at')).values('d').annotate(t=Sum('amount'))):
                 days[r['d']]['trips'] += r['t'] or ZERO
         if see_events:
-            for r in (EventRegistration.objects.filter(status='CONFIRMED', confirmed_at__date__gte=start)
-                      .annotate(d=TruncDate('confirmed_at')).values('d').annotate(t=Sum('total_amount'))):
+            for r in (Payment.objects.filter(status=Payment.Status.SUCCEEDED, event_registration__isnull=False, created_at__date__gte=start)
+                      .annotate(d=TruncDate('created_at')).values('d').annotate(t=Sum('amount'))):
                 days[r['d']]['events'] += r['t'] or ZERO
+            for r in (EventRegistration.objects.filter(status='CONFIRMED', confirmed_at__date__gte=start, payments__isnull=True)
+                      .annotate(d=TruncDate('confirmed_at')).values('d').annotate(t=Sum('total_amount'))):
+                days[r['d']]['events'] += r['t'] or ZERO   # paid by UPI QR before online payment
         revenue_30d = [{'date': (start + timedelta(days=i)).isoformat(),
                         'trips': float(days[start + timedelta(days=i)]['trips']), 'events': float(days[start + timedelta(days=i)]['events'])}
                        for i in range(30)]
@@ -226,8 +229,6 @@ class CountsView(APIView):
         out = {}
         if _can(request, 'payments'):
             out['payments'] = Payment.objects.filter(status=Payment.Status.PENDING_VERIFICATION).count()
-        if _can(request, 'event-registrations'):
-            out['event_bookings'] = EventRegistration.objects.filter(event_status_q('awaiting', now)).count()
         if _can(request, 'enquiries') or _can(request, 'corporate-enquiries'):
             out['enquiries'] = (
                 (Enquiry.objects.filter(status=Enquiry.Status.NEW).count() if _can(request, 'enquiries') else 0)

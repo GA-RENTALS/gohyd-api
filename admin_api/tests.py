@@ -205,7 +205,8 @@ class StaffHomeTests(_AdminFixtures, TenantTestCase):
         res = self.client_.get('/api/v1/admin/home/')
         self.assertEqual(res.status_code, 200, res.data)
         self.assertEqual(len(res.data['revenue_30d']), 30)
-        self.assertEqual(res.data['todo']['confirm_events']['count'], 1)
+        # An unpaid event booking needs nothing from staff: a verified Cashfree payment confirms it.
+        self.assertNotIn('confirm_events', res.data['todo'])
         self.assertEqual(res.data['todo']['balance_due']['count'], 1)
         self.assertTrue(any(k['key'] == 'bookings' and k['value'] == 2 for k in res.data['kpis']))
         self.assertEqual(len(res.data['upcoming']), 2)

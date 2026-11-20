@@ -6,7 +6,6 @@ from django.views.generic import RedirectView
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 
 from core.views import home
-from payments.views import razorpay_webhook
 
 admin.site.site_header = 'GoHyderabad'
 
@@ -32,7 +31,7 @@ urlpatterns = [
     path('api/v1/', include('bookings.urls')),
     path('api/v1/', include('crm.urls')),
     path('api/v1/', include('tracking.urls')),
-    path('webhooks/razorpay/', razorpay_webhook),
+    path('api/v1/', include('payments.urls')),
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
     path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema')),
 ]

@@ -3,7 +3,9 @@ import logging
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 
+from django.conf import settings
 from django.db import transaction
+from django.db.models import Sum
 from django.utils import timezone
 
 from bookings.models import Booking, CheckoutOrder
@@ -41,16 +43,14 @@ def amounts_due(bookings, kind):
 
 @transaction.atomic
 def start_online_payment(user, checkout: CheckoutOrder, kind: str, idempotency_key: str, booking_ids=None):
-    """Create (or replay) a gateway order covering one or several bookings of a checkout.
+    """Create (or replay) a Cashfree order covering one or several bookings of a trip checkout.
 
-    A second request for the same amount (another tab, a retry after a lost confirmation) gets the order that is still
+    A second request for the same amount (another tab, a retry after a failed attempt) gets the order that is still
     open instead of a new one, so the customer can't be charged twice for one balance. Should two orders settle anyway,
     `mark_succeeded` allocates only what is still due and requests a refund for the rest.
     """
-    existing = Payment.objects.filter(idempotency_key=idempotency_key).first()
+    existing = _replay(user, idempotency_key)
     if existing:
-        if existing.payer_id != user.pk:
-            raise BookingError('Idempotency key already used.', 'idempotency_conflict')
         return existing
     # One payment start per checkout at a time: a concurrent request waits here, then sees the order this one made.
     checkout = CheckoutOrder.objects.select_for_update().get(pk=checkout.pk)
@@ -64,27 +64,98 @@ def start_online_payment(user, checkout: CheckoutOrder, kind: str, idempotency_k
     if not due:
         raise BookingError('Nothing is due for these bookings.', 'nothing_due')
     plan = {str(k): str(v) for k, v in due.items()}
-    reusable = _open_payment_for(checkout, user, kind, plan)
+    reusable = _open_payment_for(Payment.objects.filter(checkout=checkout), user, kind,
+                                 lambda p: {k: str(v) for k, v in _plan(p).items()} == plan)
     if reusable:
         return reusable
     total = sum(due.values(), Decimal('0.00'))
-    p = Payment.objects.create(checkout=checkout, payer=user, kind=kind, method=Payment.Method.RAZORPAY, amount=total,
+    p = Payment.objects.create(checkout=checkout, payer=user, kind=kind, method=Payment.Method.CASHFREE, amount=total,
                                idempotency_key=idempotency_key)
-    # stash the allocation plan so webhook/verify can allocate without trusting the client
+    # stash the allocation plan so verification can allocate without trusting the client
     _txn(p, 'created', Payment.Status.CREATED, raw={'plan': plan})
-    order = gateway.create_order(total, receipt=str(p.pk), notes={'payment_id': str(p.pk), 'checkout': checkout.reference})
-    p.gateway_order_id = order['id']
-    p.save(update_fields=['gateway_order_id', 'updated_at'])
+    _open_gateway_order(p, user, booking_type='TRIP', reference=checkout.reference)
     return p
 
 
-def _open_payment_for(checkout, user, kind, plan):
-    """A gateway order opened within the hold time for exactly this plan, which the customer can still pay."""
+@transaction.atomic
+def start_event_payment(user, registration, kind: str, idempotency_key: str):
+    """Create (or replay) a Cashfree order for an event booking's advance (ADVANCE) or what is left (BALANCE / FULL)."""
+    from trips.models import EventRegistration
+    existing = _replay(user, idempotency_key)
+    if existing:
+        return existing
+    reg = EventRegistration.objects.select_for_update().select_related('schedule__event').get(pk=registration.pk)
+    if reg.registrant_id != user.pk:
+        raise BookingError('This booking belongs to another account.', 'not_yours')
+    if reg.effective_status not in (EventRegistration.Status.PENDING, EventRegistration.Status.CONFIRMED):
+        raise BookingError('This booking is no longer active. Please book again from the event page.', 'not_active')
+    if reg.schedule.has_started():
+        raise BookingError('This event has started, so it can no longer be paid online.', 'started')
+    paid = reg.paid_online()
+    due = (max(Decimal('0.00'), reg.advance_amount - paid) if kind == PaymentKind.ADVANCE
+           else max(Decimal('0.00'), reg.total_amount - paid))
+    if due <= 0:
+        raise BookingError('Nothing is due for this booking.', 'nothing_due')
+    reusable = _open_payment_for(Payment.objects.filter(event_registration=reg), user, kind, lambda p: p.amount == due)
+    if reusable:
+        return reusable
+    p = Payment.objects.create(event_registration=reg, payer=user, kind=kind, method=Payment.Method.CASHFREE, amount=due,
+                               idempotency_key=idempotency_key)
+    _txn(p, 'created', Payment.Status.CREATED, raw={'event_booking': str(reg.pk)})
+    if reg.status == EventRegistration.Status.PENDING:
+        # The places stay held while the customer pays, never past the event start.
+        hold = timezone.now() + timedelta(minutes=checkout_hold_minutes())
+        reg.reserved_until = min(max(reg.reserved_until or hold, hold), max(reg.schedule.starts_at, hold))
+        reg.save(update_fields=['reserved_until', 'updated_at'])
+    _open_gateway_order(p, user, booking_type='EVENT', reference=reg.reference)
+    return p
+
+
+def _replay(user, idempotency_key):
+    existing = Payment.objects.filter(idempotency_key=idempotency_key).first()
+    if existing and existing.payer_id != user.pk:
+        raise BookingError('Idempotency key already used.', 'idempotency_conflict')
+    return existing
+
+
+def _open_payment_for(payments, user, kind, same_plan):
+    """A Cashfree order opened within the hold time for exactly this amount, which the customer can still pay."""
     since = timezone.now() - timedelta(minutes=checkout_hold_minutes())
-    candidates = (Payment.objects.filter(checkout=checkout, payer=user, kind=kind, method=Payment.Method.RAZORPAY,
-                                         status=Payment.Status.CREATED, created_at__gte=since)
-                  .filter(gateway_order_id__gt='').order_by('-created_at'))
-    return next((p for p in candidates if {k: str(v) for k, v in _plan(p).items()} == plan), None)
+    candidates = (payments.filter(payer=user, kind=kind, method=Payment.Method.CASHFREE, status=Payment.Status.CREATED,
+                                  created_at__gte=since).exclude(gateway_session_id='').order_by('-created_at'))
+    return next((p for p in candidates if same_plan(p)), None)
+
+
+def order_id_for(payment):
+    """Our Cashfree order id. The prefix marks it as GoHyderabad's in the merchant account it shares with GoAdventure."""
+    return f'{settings.CASHFREE_ORDER_PREFIX}-{payment.pk.hex[:24]}'
+
+
+# Where Cashfree sends the customer after paying (or giving up): the website's thank-you page, which asks the server
+# what happened (GET /payments/cashfree/verify/<order_id>/) and shows the booking, or how to try again.
+RETURN_PATH = '/booking/thank-you'
+
+
+def _open_gateway_order(p, user, *, booking_type, reference):
+    """Create the Cashfree order for a new payment and keep its session id for the browser."""
+    order_id = order_id_for(p)
+    customer = {'customer_id': f'{settings.CASHFREE_ORDER_PREFIX}{user.pk}', 'customer_phone': gateway.customer_phone(user.phone_number)}
+    if len(user.full_name or '') >= 3:
+        customer['customer_name'] = user.full_name[:100]
+    if user.email:
+        customer['customer_email'] = user.email
+    notify = settings.PUBLIC_API_ORIGIN
+    order = gateway.create_order(
+        order_id=order_id, order_amount=p.amount, customer=customer,
+        return_url=f'{settings.FRONTEND_ORIGIN}{RETURN_PATH}?order_id={order_id}',
+        # Cashfree only calls https addresses; locally the return page's verification records the payment instead.
+        notify_url=f'{notify}/api/v1/payments/cashfree/webhook/' if notify.startswith('https://') else '',
+        tags={'brand': settings.PAYMENT_BRAND, 'booking_type': booking_type, 'reference': reference, 'payment_kind': p.kind},
+        note=f'{settings.PAYMENT_BRAND} {booking_type.lower()} {reference} ({p.kind.lower()})',
+    )
+    p.gateway_order_id, p.gateway_session_id = order_id, order['payment_session_id']
+    p.save(update_fields=['gateway_order_id', 'gateway_session_id', 'updated_at'])
+    _txn(p, 'gateway_order', Payment.Status.CREATED, raw={'cf_order_id': order.get('cf_order_id'), 'order_status': order.get('order_status')})
 
 
 def _plan(payment):
@@ -105,6 +176,11 @@ def mark_succeeded(payment_id, gateway_payment_id=None, raw=None, fee=None):
         p.gateway_fee = fee
     p.save()
     _txn(p, 'succeeded', Payment.Status.SUCCEEDED, raw)
+    if p.event_registration_id:
+        _settle_event_payment(p)
+        emit('payment.succeeded', p.pk, {'event_booking': str(p.event_registration_id), 'kind': p.kind, 'amount': str(p.amount)})
+        audit(p.payer, 'payment.succeeded', p, p.pk, after={'amount': str(p.amount)})
+        return p, True
     plan = _plan(p) or {}
     allocated, overpaid = Decimal('0.00'), {}
     for booking_id, amt in plan.items():
@@ -155,6 +231,32 @@ def _refund_overpayment(payment, booking, amount):
     logger.warning('Payment %s overpaid booking %s by %s; refund %s requested.', payment.pk, booking.reference, amount, refund.pk)
 
 
+def _settle_event_payment(p):
+    """A verified payment for an event booking: confirm it once the advance is in, and give back anything not owed."""
+    from trips.models import EventRegistration
+    reg = EventRegistration.objects.select_for_update().get(pk=p.event_registration_id)
+    paid_before = reg.paid_online() - p.amount        # this payment is already SUCCEEDED
+    if reg.effective_status in (EventRegistration.Status.CANCELLED, EventRegistration.Status.EXPIRED):
+        _refund_event_payment(p, reg, p.amount, 'Paid after the booking was cancelled or its hold ran out; places had been released.',
+                              'payment_after_expiry')
+        return
+    owed = max(Decimal('0.00'), reg.total_amount - paid_before)
+    if p.amount > owed:
+        _refund_event_payment(p, reg, p.amount - owed, 'Paid twice for the same amount; the extra is returned.', 'payment_overpaid')
+    if reg.status == EventRegistration.Status.PENDING and reg.paid_online() >= reg.advance_amount:
+        reg.status = EventRegistration.Status.CONFIRMED   # save() sends the customer the confirmation message
+        reg.save()
+
+
+def _refund_event_payment(payment, reg, amount, reason, kind):
+    refund = Refund.objects.create(event_registration=reg, amount=amount, tax_adjustment=Decimal('0.00'), reason=reason[:255],
+                                   requested_by=None)
+    SecurityEvent.objects.create(kind=kind, detail={'payment': str(payment.pk), 'event_booking': reg.reference,
+                                                    'amount': str(amount), 'refund': str(refund.pk)})
+    emit('refund.requested', refund.pk, {'event_booking': str(reg.pk)})
+    logger.warning('Payment %s for event booking %s: %s Refund %s of %s requested.', payment.pk, reg.reference, reason, refund.pk, amount)
+
+
 @transaction.atomic
 def mark_failed(payment_id, reason='', raw=None):
     p = Payment.objects.select_for_update().get(pk=payment_id)
@@ -167,13 +269,64 @@ def mark_failed(payment_id, reason='', raw=None):
     return p
 
 
-def confirm_from_client(user, payment_id, razorpay_payment_id, razorpay_signature):
-    """Called by the browser after Razorpay Checkout. We verify the signature ourselves; the browser's 'success' is not trusted."""
-    p = Payment.objects.get(pk=payment_id, payer=user)
-    if not p.gateway_order_id or not gateway.verify_checkout_signature(p.gateway_order_id, razorpay_payment_id, razorpay_signature):
-        SecurityEvent.objects.create(kind='bad_checkout_signature', detail={'payment': str(p.pk)})
-        raise BookingError('Payment could not be verified.', 'bad_signature')
-    return mark_succeeded(p.pk, razorpay_payment_id)[0]
+# ---------- verification: Cashfree is asked, the browser is never trusted ----------
+# What the customer is told after returning from Cashfree, from the order's attempts.
+OUTCOMES = {'SUCCESS': 'paid', 'FAILED': 'failed', 'USER_DROPPED': 'cancelled', 'CANCELLED': 'cancelled', 'VOID': 'failed',
+            'PENDING': 'pending', 'NOT_ATTEMPTED': 'pending'}
+
+
+def reconcile_order(order_id):
+    """Ask Cashfree what happened to one of our orders and record it.
+
+    Returns (payment, outcome) with outcome one of paid | pending | failed | cancelled | expired, or (None, None) for an
+    order that isn't ours (the merchant account is shared with GoAdventure). Only a SUCCESS for this order's exact amount
+    and currency records the payment; anything else leaves the order open so the customer can try again.
+    """
+    p = Payment.objects.filter(gateway_order_id=order_id, method=Payment.Method.CASHFREE).first()
+    if p is None:
+        return None, None
+    if p.status == Payment.Status.SUCCEEDED:
+        return p, 'paid'
+    if p.status == Payment.Status.FAILED:
+        return p, 'expired'
+    attempts = sorted(gateway.get_order_payments(order_id), key=lambda a: str(a.get('payment_time') or ''))
+    success = next((a for a in attempts if a.get('payment_status') == 'SUCCESS'), None)
+    if success:
+        if not _amount_matches(p, success):
+            return p, 'pending'   # held for finance: a security event says why
+        p, _ = mark_succeeded(p.pk, str(success.get('cf_payment_id') or ''), raw=_attempt_summary(success))
+        return p, 'paid'
+    order = gateway.get_order(order_id)
+    if order.get('order_status') in ('EXPIRED', 'TERMINATED'):
+        return mark_failed(p.pk, 'The payment window closed without a payment.', raw={'order_status': order.get('order_status')}), 'expired'
+    last = attempts[-1] if attempts else None
+    if last and last.get('payment_message'):
+        Payment.objects.filter(pk=p.pk).update(failure_reason=str(last['payment_message'])[:255])
+    return p, OUTCOMES.get((last or {}).get('payment_status'), 'pending')
+
+
+def _attempt_summary(attempt):
+    """The parts of a Cashfree payment worth keeping (no card or bank account details)."""
+    keep = ('cf_payment_id', 'payment_status', 'payment_amount', 'payment_currency', 'payment_group', 'payment_time',
+            'payment_completion_time', 'bank_reference', 'payment_message')
+    return {k: attempt.get(k) for k in keep if attempt.get(k) is not None}
+
+
+def _amount_matches(payment, attempt):
+    """The amount and currency paid are the ones this order was created for."""
+    try:
+        paid = Decimal(str(attempt.get('payment_amount'))).quantize(Decimal('0.01'))
+    except (InvalidOperation, TypeError):
+        paid = None
+    if paid == payment.amount and attempt.get('payment_currency', 'INR') == payment.currency:
+        return True
+    SecurityEvent.objects.create(kind='payment_amount_mismatch', detail={
+        'payment': str(payment.pk), 'expected': str(payment.amount), 'paid': str(attempt.get('payment_amount')),
+        'currency': attempt.get('payment_currency'),
+    })
+    logger.error('Payment %s: Cashfree reports %s %s, expected %s; not recorded.', payment.pk, attempt.get('payment_amount'),
+                 attempt.get('payment_currency'), payment.amount)
+    return False
 
 
 def record_manual_payment(actor, checkout, kind, amount, reference, booking_ids=None, request=None):
@@ -214,23 +367,32 @@ def verify_manual_payment(actor, payment, approve, note='', request=None):
 
 
 # ---------- webhooks: signature + duplicate protection ----------
-def handle_webhook(raw_body: bytes, signature: str, payload: dict, ip=None):
-    valid = gateway.verify_webhook_signature(raw_body, signature)
-    event_id = payload.get('id') or payload.get('event_id') or ''
-    if not valid:
+PROVIDER = 'cashfree'
+
+
+def webhook_event_id(payload, idempotency_key=''):
+    """One key per real-world event, so a redelivery is recognised: Cashfree's idempotency header when it sends one,
+    otherwise the event type, the payment or refund and its status."""
+    if idempotency_key:
+        return idempotency_key[:100]
+    data = payload.get('data') or {}
+    pay, ref = data.get('payment') or {}, data.get('refund') or {}
+    return ':'.join([str(payload.get('type', '')), str(pay.get('cf_payment_id') or ref.get('cf_refund_id') or ref.get('refund_id') or ''),
+                     str(pay.get('payment_status') or ref.get('refund_status') or '')])[:100]
+
+
+def handle_webhook(raw_body: bytes, timestamp: str, signature: str, payload: dict, idempotency_key='', ip=None):
+    if not gateway.verify_webhook_signature(raw_body, timestamp, signature):
         SecurityEvent.objects.create(kind='webhook_bad_signature', ip=ip)
         raise PermissionError('bad signature')
-    if not event_id:
-        raise ValueError('Razorpay webhook is missing its event id.')
-
-    return _process_webhook_event(event_id, payload)
+    return _process_webhook_event(webhook_event_id(payload, idempotency_key), payload)
 
 
 def retry_webhook_event(event_id):
     """Retry one previously authenticated webhook from the admin inbox."""
     with transaction.atomic():
         ev = PaymentGatewayEvent.objects.select_for_update().filter(
-            provider='razorpay', event_id=event_id, signature_valid=True,
+            provider=PROVIDER, event_id=event_id, signature_valid=True,
         ).first()
         if ev is None:
             raise BookingError('Webhook event not found.', 'not_found')
@@ -244,12 +406,8 @@ def _process_webhook_event(event_id, payload):
     processing_error = None
     with transaction.atomic():
         ev, _ = PaymentGatewayEvent.objects.select_for_update().get_or_create(
-            provider='razorpay', event_id=event_id,
-            defaults={
-                'event_type': payload.get('event', ''),
-                'payload': payload,
-                'signature_valid': True,
-            },
+            provider=PROVIDER, event_id=event_id,
+            defaults={'event_type': str(payload.get('type', ''))[:80], 'payload': payload, 'signature_valid': True},
         )
         if ev.processed_at:
             return 'duplicate'
@@ -274,46 +432,18 @@ def _process_webhook_event(event_id, payload):
     return 'processed'
 
 
-def _captured_matches(payment, entity):
-    """The captured amount and currency are the ones this order was created for (`order.paid` may carry no payment)."""
-    if not entity or 'amount' not in entity:
-        return True
-    expected = int(payment.amount * 100)
-    if int(entity['amount']) == expected and entity.get('currency', payment.currency) == payment.currency:
-        return True
-    SecurityEvent.objects.create(kind='payment_amount_mismatch', detail={
-        'payment': str(payment.pk), 'expected_paise': expected, 'captured_paise': entity.get('amount'),
-        'currency': entity.get('currency'),
-    })
-    logger.error('Payment %s captured %s %s, expected %s paise; not recorded.', payment.pk, entity.get('amount'),
-                 entity.get('currency'), expected)
-    return False
-
-
 def _dispatch(payload):
-    event = payload.get('event', '')
-    ent = payload.get('payload', {})
-    if event in ('payment.captured', 'order.paid'):
-        pay = (ent.get('payment') or {}).get('entity', {})
-        order_id = pay.get('order_id') or (ent.get('order') or {}).get('entity', {}).get('id')
-        p = Payment.objects.filter(gateway_order_id=order_id).first()
-        if p and _captured_matches(p, pay):
-            fee = Decimal(pay.get('fee', 0)) / 100 if pay.get('fee') else None
-            mark_succeeded(p.pk, pay.get('id'), raw=pay, fee=fee)
-    elif event == 'payment.failed':
-        pay = (ent.get('payment') or {}).get('entity', {})
-        p = Payment.objects.filter(gateway_order_id=pay.get('order_id')).first()
-        if p:
-            mark_failed(p.pk, pay.get('error_description', ''), raw=pay)
-    elif event in ('refund.processed', 'refund.failed'):
-        ref = (ent.get('refund') or {}).get('entity', {})
-        rt = RefundTransaction.objects.filter(gateway_refund_id=ref.get('id')).select_related('refund').first()
-        if rt:
-            with transaction.atomic():
-                status = Refund.Status.PROCESSED if event == 'refund.processed' else Refund.Status.FAILED
-                rt.status = status; rt.raw = ref; rt.save()
-                rt.refund.status = status; rt.refund.save(update_fields=['status', 'updated_at'])
-                emit('refund.' + status.lower(), rt.refund_id, {})
+    """The notification only says which order or refund changed; what happened is read back from Cashfree."""
+    event_type = str(payload.get('type', ''))
+    data = payload.get('data') or {}
+    if event_type.startswith('PAYMENT_'):
+        order_id = (data.get('order') or {}).get('order_id')
+        if order_id:
+            reconcile_order(order_id)   # orders that aren't ours (GoAdventure's) are ignored
+    elif event_type.startswith('REFUND_'):
+        refund_id = (data.get('refund') or {}).get('refund_id')
+        if refund_id:
+            reconcile_refund(refund_id)
 
 
 # ---------- refunds (processing is a separate transaction; the original payment is never edited) ----------
@@ -343,35 +473,128 @@ def reject_refund(actor, refund: Refund, reason, request=None):
     return refund
 
 
+# Cashfree refund status -> ours (a refund can sit PENDING / ONHOLD for days before the bank completes it).
+REFUND_STATUS = {'SUCCESS': Refund.Status.PROCESSED, 'CANCELLED': Refund.Status.FAILED, 'REJECTED': Refund.Status.FAILED,
+                 'PENDING': Refund.Status.PROCESSING, 'ONHOLD': Refund.Status.PROCESSING, 'PENDING_APPROVAL': Refund.Status.PROCESSING}
+
+
+def _refundable_payments(r):
+    """(payment, the part of it that belongs to this refund's booking), latest first: only Cashfree payments refund online."""
+    online = {'status': Payment.Status.SUCCEEDED, 'method': Payment.Method.CASHFREE}
+    if r.booking_id:
+        allocs = (PaymentAllocation.objects.filter(booking=r.booking, **{f'payment__{k}': v for k, v in online.items()})
+                  .select_related('payment').order_by('-created_at'))
+        return [(a.payment, a.amount) for a in allocs]
+    return [(p, p.amount) for p in Payment.objects.filter(event_registration=r.event_registration, **online).order_by('-created_at')]
+
+
 def process_refund(refund_id):
-    """Spreads the refund across the booking's successful gateway payments (latest first) and calls Razorpay per payment."""
+    """Spreads an approved refund across the booking's Cashfree payments (latest first), one Cashfree refund per payment.
+
+    Each Cashfree refund has our own id, so a retry after a timeout can't refund the same money twice.
+    """
     with transaction.atomic():
         r = Refund.objects.select_for_update().get(pk=refund_id)
         if r.status not in (Refund.Status.APPROVED, Refund.Status.FAILED):
             return r
         r.status = Refund.Status.PROCESSING
         r.save(update_fields=['status', 'updated_at'])
-    remaining = r.amount
-    allocs = (PaymentAllocation.objects.filter(booking=r.booking, payment__status=Payment.Status.SUCCEEDED, payment__method=Payment.Method.RAZORPAY)
-              .select_related('payment').order_by('-created_at'))
+    remaining = r.amount - sum((t.amount for t in r.transactions.exclude(status=Refund.Status.FAILED)), Decimal('0.00'))
     try:
-        for a in allocs:
+        for payment, share in _refundable_payments(r):
             if remaining <= 0:
                 break
-            already = sum((t.amount for t in a.payment.refund_transactions.exclude(status=Refund.Status.FAILED)), Decimal('0.00'))
-            part = min(remaining, a.amount - already)
-            if part <= 0 or not a.payment.gateway_payment_id:
+            already = sum((t.amount for t in payment.refund_transactions.exclude(status=Refund.Status.FAILED)), Decimal('0.00'))
+            part = min(remaining, share - already)
+            if part <= 0 or not payment.gateway_order_id:
                 continue
-            gid = gateway.create_refund(a.payment.gateway_payment_id, part, receipt=str(r.pk), notes={'refund': str(r.pk)})
-            RefundTransaction.objects.create(refund=r, payment=a.payment, gateway_refund_id=gid, status=Refund.Status.PROCESSING, amount=part)
+            refund_id_ = f'{settings.CASHFREE_ORDER_PREFIX}-R-{r.pk.hex[:12]}-{r.transactions.count() + 1}'
+            result = gateway.create_refund(order_id=payment.gateway_order_id, refund_id=refund_id_, refund_amount=part,
+                                           note=(r.reason or 'GoHyderabad refund'))
+            RefundTransaction.objects.create(refund=r, payment=payment, gateway_refund_id=refund_id_, amount=part,
+                                             status=REFUND_STATUS.get(result.get('refund_status'), Refund.Status.PROCESSING),
+                                             raw={k: result.get(k) for k in ('cf_refund_id', 'refund_status', 'refund_arn', 'status_description')})
             remaining -= part
         if remaining > 0:
-            raise gateway.GatewayError(f'Could not route {remaining} of the refund to gateway payments (manual payments must be refunded manually).')
+            raise gateway.GatewayError(f'Could not route {remaining} of the refund to online payments (cash or bank payments are refunded by hand).')
     except gateway.GatewayError as exc:
         Refund.objects.filter(pk=r.pk).update(status=Refund.Status.FAILED)
         logger.warning('refund %s failed: %s', r.pk, exc)
         raise
+    _settle_refund(r.pk)
+    return Refund.objects.get(pk=r.pk)
+
+
+def reconcile_refund(gateway_refund_id):
+    """Read one Cashfree refund's status back (after its webhook, or on the periodic check) and record it."""
+    rt = RefundTransaction.objects.select_related('payment').filter(gateway_refund_id=gateway_refund_id).first()
+    if rt is None or rt.payment is None:
+        return None   # not ours
+    result = gateway.get_refund(rt.payment.gateway_order_id, gateway_refund_id)
+    status = REFUND_STATUS.get(result.get('refund_status'), Refund.Status.PROCESSING)
+    if status != rt.status:
+        rt.status = status
+        rt.raw = {**(rt.raw or {}), **{k: result.get(k) for k in ('refund_status', 'refund_arn', 'status_description', 'processed_at')}}
+        rt.save(update_fields=['status', 'raw'])
+    _settle_refund(rt.refund_id)
+    return rt
+
+
+@transaction.atomic
+def _settle_refund(refund_pk):
+    """A refund is done when every Cashfree part succeeded, and failed when any part failed (finance can retry it)."""
+    r = Refund.objects.select_for_update().get(pk=refund_pk)
+    parts = list(r.transactions.all())
+    if not parts or r.status in (Refund.Status.PROCESSED, Refund.Status.REJECTED):
+        return r
+    if any(t.status == Refund.Status.FAILED for t in parts):
+        new = Refund.Status.FAILED
+    elif sum((t.amount for t in parts), Decimal('0.00')) >= r.amount and all(t.status == Refund.Status.PROCESSED for t in parts):
+        new = Refund.Status.PROCESSED
+    else:
+        new = Refund.Status.PROCESSING
+    if new != r.status:
+        r.status = new
+        r.save(update_fields=['status', 'updated_at'])
+        if new in (Refund.Status.PROCESSED, Refund.Status.FAILED):
+            emit('refund.' + new.lower(), r.pk, {})
     return r
+
+
+def refundable_amount(*, booking=None, event_registration=None):
+    """Paid online for this booking and not already being refunded."""
+    if booking is not None:
+        paid = (PaymentAllocation.objects.filter(booking=booking, payment__status=Payment.Status.SUCCEEDED,
+                                                 payment__method=Payment.Method.CASHFREE).aggregate(t=Sum('amount'))['t'])
+        refunds = Refund.objects.filter(booking=booking)
+    else:
+        paid = (Payment.objects.filter(event_registration=event_registration, status=Payment.Status.SUCCEEDED,
+                                       method=Payment.Method.CASHFREE).aggregate(t=Sum('amount'))['t'])
+        refunds = Refund.objects.filter(event_registration=event_registration)
+    taken = refunds.exclude(status__in=(Refund.Status.REJECTED, Refund.Status.FAILED)).aggregate(t=Sum('amount'))['t']
+    return max(Decimal('0.00'), (paid or Decimal('0.00')) - (taken or Decimal('0.00')))
+
+
+@transaction.atomic
+def issue_refund(actor, *, amount, reason, booking=None, event_registration=None, request=None):
+    """Finance returns all or part of an online payment directly (goodwill, a price change), outside a cancellation.
+    It is approved by the person issuing it and sent to Cashfree straight away."""
+    try:
+        amount = Decimal(str(amount)).quantize(Decimal('0.01'))
+    except (InvalidOperation, TypeError):
+        raise BookingError('Enter the amount to refund.', 'bad_amount')
+    reason = (reason or '').strip()
+    if not reason:
+        raise BookingError('Say why this refund is given; the customer may ask.', 'reason_required')
+    available = refundable_amount(booking=booking, event_registration=event_registration)
+    if not 0 < amount <= available:
+        raise BookingError(f'Enter an amount between ₹1 and ₹{available}, the online payment not yet refunded.', 'bad_amount')
+    refund = Refund.objects.create(booking=booking, event_registration=event_registration, amount=amount,
+                                   tax_adjustment=Decimal('0.00'), reason=reason[:255], requested_by=actor,
+                                   approved_by=actor, status=Refund.Status.APPROVED)
+    audit(actor, 'refund.issued', refund, refund.pk, after={'amount': str(amount), 'reason': reason}, request=request)
+    emit('refund.approved', refund.pk, {})
+    return refund
 
 
 # ---------- event refunds (paid back by hand over UPI; staff record the outcome) ----------

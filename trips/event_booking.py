@@ -26,8 +26,9 @@ def is_bookable(event):
 
 
 def create_event_booking(*, event_slug, schedule_id, name, phone, participant_count, note='', source='website', email='',
-                         coupon_code=''):
-    """Hold `participant_count` places on a published event date. Raises ValidationError with a field dict."""
+                         coupon_code='', registrant=None):
+    """Hold `participant_count` places on a published event date while the advance is paid online; a free booking is
+    confirmed straight away. Raises ValidationError with a field dict."""
     from bookings.coupons import CouponError, check_event_coupon, event_discount, find_coupon
     from crm.models import Enquiry, EnquirySource
 
@@ -46,7 +47,7 @@ def create_event_booking(*, event_slug, schedule_id, name, phone, participant_co
             raise ValidationError({'schedule': 'Bookings for this date have closed.'})
 
         booking = EventRegistration(
-            schedule=schedule, contact_name=name, contact_phone=phone, contact_email=email,
+            schedule=schedule, registrant=registrant, contact_name=name, contact_phone=phone, contact_email=email,
             participant_count=participant_count,
             unit_price=event.price, customer_note=note, source=source, status=EventRegistration.Status.PENDING,
             refund_policy_snapshot=event.refund_tiers(),   # later policy changes don't affect this booking
@@ -60,6 +61,9 @@ def create_event_booking(*, event_slug, schedule_id, name, phone, participant_co
             booking.coupon = coupon
             booking.discount_amount = event_discount(coupon, event.price * participant_count)
         booking.full_clean(exclude=['reference', 'registrant'])   # registration type, per-booking cap, remaining capacity
+        # Nothing to pay (a free event or a 100% coupon): confirmed at once. (total_amount itself is set when saving.)
+        if (booking.unit_price or 0) * participant_count - (booking.discount_amount or 0) <= 0:
+            booking.status = EventRegistration.Status.CONFIRMED
         for _ in range(5):   # astronomically unlikely, but never surface a reference collision to the visitor
             if not EventRegistration.objects.filter(reference=booking.reference).exists():
                 break
@@ -74,7 +78,8 @@ def create_event_booking(*, event_slug, schedule_id, name, phone, participant_co
             message='\n'.join(filter(None, [
                 f'Event booking {booking.reference}: {participant_count} participant(s), total ₹{booking.total_amount}'
                 + (f' after coupon {booking.coupon.code} (−₹{booking.discount_amount})' if booking.coupon else ''),
-                f'Status: pending confirmation (slots held until {timezone.localtime(booking.reserved_until):%d %b %Y %I:%M %p})',
+                ('Status: confirmed (nothing to pay)' if booking.status == EventRegistration.Status.CONFIRMED else
+                 f'Status: awaiting online payment (places held until {timezone.localtime(booking.reserved_until):%d %b %Y %I:%M %p})'),
                 f'Customer note: {note}' if note else '',
             ])),
         )
@@ -123,64 +128,3 @@ def cancel_event_date(schedule, actor, reason, full_refund=True):
         audit(actor, 'event_schedule.cancel', schedule, schedule.pk,
               after={'reason': reason, 'bookings': len(bookings), 'full_refund': full_refund})
     return bookings
-
-
-PAYMENT_SCREENSHOT_MAX_BYTES = 5 * 1024 * 1024
-
-
-class PaymentStorageError(Exception):
-    """The screenshot was fine but file storage (S3) refused it."""
-_PAYMENT_FORMATS = {'JPEG': 'jpg', 'PNG': 'png', 'WEBP': 'webp'}
-
-
-def submit_payment_proof(*, reference, phone, screenshot, utr=''):
-    """Attach the customer's UPI payment screenshot to their pending booking and alert the organiser on WhatsApp.
-
-    The phone number used to book must match. Uploading again replaces the earlier screenshot (and alerts again).
-    Raises ValidationError with a field dict.
-    """
-    from PIL import Image, UnidentifiedImageError
-
-    from core.services import emit
-
-    if screenshot is None:
-        raise ValidationError({'screenshot': 'Choose the screenshot of your payment.'})
-    if screenshot.size > PAYMENT_SCREENSHOT_MAX_BYTES:
-        raise ValidationError({'screenshot': 'The screenshot must be smaller than 5 MB.'})
-    try:   # check it really is an image, whatever its name says
-        with Image.open(screenshot) as img:
-            img.verify()
-            fmt = img.format
-    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
-        raise ValidationError({'screenshot': 'Upload a JPG, PNG or WebP image of your payment.'})
-    if fmt not in _PAYMENT_FORMATS:
-        raise ValidationError({'screenshot': 'Upload a JPG, PNG or WebP image of your payment.'})
-    screenshot.seek(0)
-    screenshot.name = f'payment.{_PAYMENT_FORMATS[fmt]}'
-
-    with transaction.atomic():
-        booking = (EventRegistration.objects.select_for_update().select_related('schedule__event')
-                   .filter(reference=(reference or '').strip().upper(), contact_phone=phone).first())
-        if booking is None:
-            raise ValidationError({'detail': 'No booking matches that reference and phone number.'})
-        if not (booking.schedule.event.payment_qr_id or booking.schedule.event.payment_upi_id):
-            raise ValidationError({'detail': 'This event does not take payment by QR code.'})
-        if booking.effective_status not in (EventRegistration.Status.PENDING, EventRegistration.Status.CONFIRMED):
-            raise ValidationError({'detail': 'This booking is no longer active, so a payment can\'t be added. Please book again.'})
-        old = booking.payment_screenshot.name if booking.payment_screenshot else ''
-        try:
-            booking.payment_screenshot.save(screenshot.name, screenshot, save=False)
-        except Exception as exc:   # noqa: BLE001 - S3/network/credentials: storage backends raise many types
-            import logging
-            logging.getLogger(__name__).exception('Could not store payment screenshot for %s', booking.reference)
-            raise PaymentStorageError() from exc
-        booking.payment_utr = (utr or '').strip()[:40]
-        booking.payment_submitted_at = timezone.now()
-        booking.save(update_fields=['payment_screenshot', 'payment_utr', 'payment_submitted_at', 'updated_at'])
-        emit('event_booking.payment_submitted', booking.pk, {'reference': booking.reference})
-    if old:
-        try:
-            booking.payment_screenshot.storage.delete(old)
-        except Exception:  # noqa: BLE001 - a leftover file is harmless
-            pass
-    return booking

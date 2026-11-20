@@ -134,59 +134,13 @@ class TripDetailSerializer(TripListSerializer):
 class EventBookingCreateSerializer(serializers.Serializer):
     event = serializers.SlugField()
     schedule = serializers.UUIDField()
-    name = serializers.CharField(max_length=150, trim_whitespace=True)
-    phone = serializers.CharField(max_length=20)
+    name = serializers.CharField(max_length=150, trim_whitespace=True, required=False, allow_blank=True, default='',
+                                 help_text="Who the booking is for; defaults to the account's name. The account's phone is used.")
     email = serializers.EmailField(required=False, allow_blank=True, default='')
     participant_count = serializers.IntegerField(min_value=1, max_value=500)
     note = serializers.CharField(max_length=1000, required=False, allow_blank=True, default='')
     coupon = serializers.CharField(max_length=30, required=False, allow_blank=True, default='')
     consent_to_contact = serializers.BooleanField()
-
-    def validate_phone(self, value):
-        from django.core.exceptions import ValidationError as DjangoValidationError
-        from accounts.models import normalize_phone
-        try:
-            return normalize_phone(value)
-        except DjangoValidationError as exc:
-            raise serializers.ValidationError(exc.messages)
-
-    def validate_consent_to_contact(self, value):
-        if not value:
-            raise serializers.ValidationError('Please allow us to contact you to confirm the booking.')
-        return value
-
-
-class EventPaymentProofSerializer(serializers.Serializer):
-    phone = serializers.CharField(max_length=20)
-    screenshot = serializers.FileField()
-    utr = serializers.CharField(max_length=40, required=False, allow_blank=True, default='')
-
-    def validate_phone(self, value):
-        from django.core.exceptions import ValidationError as DjangoValidationError
-        from accounts.models import normalize_phone
-        try:
-            return normalize_phone(value)
-        except DjangoValidationError as exc:
-            raise serializers.ValidationError(exc.messages)
-
-
-def _media_url(asset, request=None):
-    if not asset or not asset.file:
-        return None
-    try:
-        url = asset.file.url
-    except (ValueError, OSError):
-        return None
-    return request.build_absolute_uri(url) if request and url.startswith('/') else url
-
-
-def event_payment_info(event, request=None):
-    """UPI QR details shown to customers, or None when the event doesn't take QR payments."""
-    url = _media_url(event.payment_qr, request) if event.payment_qr_id else None
-    if not url and not event.payment_upi_id:
-        return None
-    # qr_url may be null (UPI ID only, no image uploaded yet): the website then uses its bundled QR, if it has one.
-    return {'qr_url': url, 'upi_id': event.payment_upi_id, 'payee_name': event.payment_payee_name}
 
 
 class EventCouponPreviewSerializer(serializers.Serializer):
@@ -200,14 +154,23 @@ class EventBookingCancelSerializer(serializers.Serializer):
     reason = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
 
 
+# Online refunds as the customer reads them (payments.Refund statuses).
+ONLINE_REFUND_LABEL = {'REQUESTED': 'Being reviewed', 'APPROVED': 'Approved', 'PROCESSING': 'On its way to your account',
+                       'PROCESSED': 'Refunded', 'FAILED': 'Being retried by our team', 'REJECTED': 'Not refunded'}
+
+
 def event_refund_info(registration):
-    """The refund on a cancelled booking, or None."""
+    """The refund on a cancelled booking, or None: a Cashfree refund, or (bookings paid by QR before) a UPI refund."""
+    online = registration.gateway_refunds.exclude(status='REJECTED').order_by('-created_at').first()
+    if online is not None:
+        return {'status': online.status, 'status_label': ONLINE_REFUND_LABEL.get(online.status, online.status),
+                'amount': str(online.amount), 'upi_reference': '', 'recorded_at': online.updated_at, 'online': True}
     try:
         r = registration.refund
     except ObjectDoesNotExist:
         return None
     return {'status': r.status, 'status_label': r.get_status_display(), 'amount': str(r.amount),
-            'upi_reference': r.upi_reference if r.status == r.Status.SENT else '', 'recorded_at': r.recorded_at}
+            'upi_reference': r.upi_reference if r.status == r.Status.SENT else '', 'recorded_at': r.recorded_at, 'online': False}
 
 
 class EventBookingSerializer(serializers.ModelSerializer):
@@ -222,8 +185,9 @@ class EventBookingSerializer(serializers.ModelSerializer):
     venue = serializers.SerializerMethodField()
     booking_whatsapp_number = serializers.CharField(source='schedule.event.booking_whatsapp_number')
     seats_left = serializers.SerializerMethodField()
-    payment = serializers.SerializerMethodField()
-    payment_submitted = serializers.SerializerMethodField()
+    paid = serializers.SerializerMethodField()
+    outstanding = serializers.SerializerMethodField()
+    pay_now = serializers.SerializerMethodField(help_text='What the customer can pay online now, or null.')
     coupon_code = serializers.SlugRelatedField(source='coupon', slug_field='code', read_only=True)
     cancellation = serializers.SerializerMethodField()
     refund = serializers.SerializerMethodField()
@@ -233,7 +197,7 @@ class EventBookingSerializer(serializers.ModelSerializer):
         fields = ('reference', 'status', 'status_label', 'contact_name', 'participant_count', 'unit_price',
                   'discount_amount', 'coupon_code', 'total_amount', 'reserved_until', 'confirmed_at', 'created_at', 'event_slug', 'event_title',
                   'starts_at', 'ends_at', 'time_tbd', 'venue', 'booking_whatsapp_number', 'seats_left',
-                  'payment', 'payment_submitted', 'payment_submitted_at', 'cancelled_at', 'cancelled_by_customer',
+                  'advance_amount', 'paid', 'outstanding', 'pay_now', 'cancelled_at', 'cancelled_by_customer',
                   'cancellation', 'refund')
 
     def get_cancellation(self, o):
@@ -245,8 +209,19 @@ class EventBookingSerializer(serializers.ModelSerializer):
                 'refund_amount': str(amount), 'paid': o.counts_as_paid}
 
     def get_refund(self, o): return event_refund_info(o)
-    def get_payment(self, o): return event_payment_info(o.schedule.event, self.context.get('request'))
-    def get_payment_submitted(self, o): return bool(o.payment_screenshot)
+    def get_paid(self, o): return str(o.paid_online())
+    def get_outstanding(self, o): return str(o.outstanding())
+
+    def get_pay_now(self, o):
+        """ADVANCE to confirm a booking still held for payment, BALANCE for the rest of a confirmed one, or null."""
+        status, paid = o.effective_status, o.paid_online()
+        if o.schedule.has_started() or o.total_amount <= 0:
+            return None
+        if status == o.Status.PENDING and o.advance_amount > paid:
+            return {'kind': 'ADVANCE', 'amount': str(o.advance_amount - paid)}
+        if status == o.Status.CONFIRMED and o.total_amount > paid and not o._paid_by_qr():
+            return {'kind': 'BALANCE', 'amount': str(o.total_amount - paid)}
+        return None
 
     def get_status(self, o): return o.effective_status
     def get_status_label(self, o): return m.EventRegistration.Status(o.effective_status).label
@@ -377,8 +352,8 @@ class EventDetailSerializer(EventListSerializer):
     schedule_note = serializers.SerializerMethodField()
     seo_title = serializers.SerializerMethodField()
     seo_description = serializers.SerializerMethodField()
-    reservation_hold_hours = serializers.IntegerField(read_only=True)
-    payment = serializers.SerializerMethodField()
+    hold_minutes = serializers.SerializerMethodField(help_text='How long a new booking holds its places while it is paid.')
+    advance_percent = serializers.SerializerMethodField(help_text='Share of the price paid online when booking (100 = all).')
     cover_alt = serializers.SerializerMethodField()
     cover_credit = serializers.SerializerMethodField()
     cancellation_cutoff_hours = serializers.IntegerField(read_only=True)
@@ -387,9 +362,9 @@ class EventDetailSerializer(EventListSerializer):
     class Meta(EventListSerializer.Meta):
         fields = EventListSerializer.Meta.fields + ('body', 'venue_name', 'venue_address', 'schedules', 'itineraries',
                                                     'things_to_bring', 'inclusions', 'exclusions', 'format_details',
-                                                    'rules', 'reservation_hold_hours', 'highlights', 'faqs',
+                                                    'rules', 'hold_minutes', 'highlights', 'faqs',
                                                     'headline', 'image_caption', 'format_note', 'schedule_note',
-                                                    'seo_title', 'seo_description', 'payment', 'cover_alt',
+                                                    'seo_title', 'seo_description', 'advance_percent', 'cover_alt',
                                                     'cover_credit', 'cancellation_cutoff_hours', 'refund_policy')
 
     def get_refund_policy(self, o):
@@ -399,7 +374,12 @@ class EventDetailSerializer(EventListSerializer):
     def get_cover_alt(self, o): return o.cover.alt_text if o.cover_id else ''
     def get_cover_credit(self, o): return o.cover.credit if o.cover_id else ''
 
-    def get_payment(self, o): return event_payment_info(o, self.context.get('request'))
+    def get_hold_minutes(self, o):
+        from bookings.services import checkout_hold_minutes
+        return checkout_hold_minutes()
+
+    def get_advance_percent(self, o):
+        return 100 if o.advance_basis_points is None else o.advance_basis_points / 100
     def get_body(self, o): return pick(o, self._lang(), 'body')
     def get_schedules(self, o): return EventScheduleSerializer(self._upcoming(o), many=True).data
 

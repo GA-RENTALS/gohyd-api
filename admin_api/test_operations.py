@@ -7,7 +7,7 @@ from unittest import mock
 from django.utils import timezone
 
 from core.models import AuditLog
-from core.testing import TenantTestCase
+from core.testing import TenantTestCase, fake_cashfree_order
 
 from .tests import _AdminFixtures
 
@@ -18,7 +18,7 @@ class CancelDateTests(_AdminFixtures, TenantTestCase):
 
     def _paid_advance(self, booking):
         from payments import services
-        with mock.patch('payments.gateway.create_order', return_value={'id': f'order-{booking.pk}'}):
+        with mock.patch('payments.gateway.create_order', side_effect=fake_cashfree_order):
             payment = services.start_online_payment(self.customer, booking.checkout, 'ADVANCE', f'k-{booking.pk}')
         services.mark_succeeded(payment.pk, 'pay_1')
         return payment.amount
@@ -62,7 +62,9 @@ class CancelDateTests(_AdminFixtures, TenantTestCase):
         self.assertEqual(EventRefund.objects.get(registration=reg).amount, Decimal('600.00'))
         self.assertIsNotNone(schedule.cancelled_at)
         from rest_framework.test import APIClient
-        late = APIClient().post('/api/v1/event-bookings/', {
+        late_customer = APIClient()
+        late_customer.force_authenticate(self.customer)
+        late = late_customer.post('/api/v1/event-bookings/', {
             'event': 'overview-event', 'schedule': str(schedule.pk), 'name': 'Late', 'phone': '9876500001', 'participant_count': 1,
             'consent_to_contact': True,
         }, format='json')
@@ -143,14 +145,14 @@ class PublishingAndAdminShapeTests(_AdminFixtures, TenantTestCase):
         perms = self.client_.get('/api/v1/admin/session/').data['permissions']
         self.assertIn('bookings.grant_departure_exception', perms)
 
-    def test_a_payment_event_still_failing_after_razorpays_retries_is_on_the_dashboard(self):
+    def test_a_payment_event_still_failing_after_cashfrees_retries_is_on_the_dashboard(self):
         from payments.models import PaymentGatewayEvent
-        old = PaymentGatewayEvent.objects.create(provider='razorpay', event_id='evt_old', event_type='payment.captured',
+        old = PaymentGatewayEvent.objects.create(provider='cashfree', event_id='evt_old', event_type='PAYMENT_SUCCESS_WEBHOOK',
                                                  payload={}, signature_valid=True, error='database blip')
         PaymentGatewayEvent.objects.filter(pk=old.pk).update(created_at=timezone.now() - timedelta(hours=1))
-        PaymentGatewayEvent.objects.create(provider='razorpay', event_id='evt_new', event_type='payment.captured',
+        PaymentGatewayEvent.objects.create(provider='cashfree', event_id='evt_new', event_type='PAYMENT_SUCCESS_WEBHOOK',
                                            payload={}, signature_valid=True, error='still retrying')   # Razorpay's turn
-        PaymentGatewayEvent.objects.create(provider='razorpay', event_id='evt_ok', event_type='payment.captured',
+        PaymentGatewayEvent.objects.create(provider='cashfree', event_id='evt_ok', event_type='PAYMENT_SUCCESS_WEBHOOK',
                                            payload={}, signature_valid=True, processed_at=timezone.now())
         todo = self.client_.get('/api/v1/admin/home/').data['todo']
         self.assertEqual(todo['failed_payment_events']['count'], 1)

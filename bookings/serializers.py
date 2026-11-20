@@ -106,17 +106,6 @@ class CheckoutSerializer(serializers.ModelSerializer):
     coupon_code = serializers.CharField(source='coupon.code', default=None, read_only=True)
 
 
-class PayRequestSerializer(serializers.Serializer):
-    kind = serializers.ChoiceField(choices=['ADVANCE', 'BALANCE', 'FULL'])
-    bookings = serializers.ListField(child=serializers.UUIDField(), required=False)
-
-
-class ConfirmPaymentSerializer(serializers.Serializer):
-    payment = serializers.UUIDField()
-    razorpay_payment_id = serializers.CharField()
-    razorpay_signature = serializers.CharField()
-
-
 class CartItemSerializer(serializers.ModelSerializer):
     """Write: schedule, participant_count, pickup_point. Read: also what the cart page needs to show each line."""
     trip = serializers.CharField(source='schedule.trip.slug', read_only=True)

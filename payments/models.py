@@ -63,9 +63,9 @@ class PaymentKind(models.TextChoices):
 
 
 class Payment(UUIDModel, Timestamped):
-    """Gateway or manual transaction. One payment may be allocated across several bookings of a checkout."""
+    """Gateway or manual transaction, for one trip checkout (allocated across its bookings) or one event booking."""
     class Method(models.TextChoices):
-        RAZORPAY = 'RAZORPAY'
+        CASHFREE = 'CASHFREE'
         MANUAL = 'MANUAL'
 
     class Status(models.TextChoices):
@@ -75,14 +75,19 @@ class Payment(UUIDModel, Timestamped):
         FAILED = 'FAILED'
         REJECTED = 'REJECTED'
 
-    checkout = models.ForeignKey('bookings.CheckoutOrder', on_delete=models.PROTECT, related_name='payments')
+    checkout = models.ForeignKey('bookings.CheckoutOrder', null=True, blank=True, on_delete=models.PROTECT, related_name='payments')
+    event_registration = models.ForeignKey('trips.EventRegistration', null=True, blank=True, on_delete=models.PROTECT,
+                                           related_name='payments')
     payer = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='payments')
     kind = models.CharField(max_length=10, choices=PaymentKind.choices)
     method = models.CharField(max_length=10, choices=Method.choices)
     status = models.CharField(max_length=24, choices=Status.choices, default=Status.CREATED, db_index=True)
     currency = models.CharField(max_length=3, default='INR')
     amount = models.DecimalField(validators=[MinValueValidator(0)], **MONEY)
-    gateway_order_id = models.CharField(max_length=64, null=True, blank=True, unique=True)
+    gateway_order_id = models.CharField(max_length=64, null=True, blank=True, unique=True,
+                                        help_text='Our Cashfree order_id (CASHFREE_ORDER_PREFIX-…): searchable in the Cashfree dashboard.')
+    gateway_session_id = models.CharField(max_length=300, blank=True, default='', db_default='',
+                                          help_text="Cashfree's payment_session_id for this order.")
     gateway_payment_id = models.CharField(max_length=64, null=True, blank=True, unique=True)
     idempotency_key = models.CharField(max_length=80, unique=True)
     gateway_fee = models.DecimalField(default=0, **MONEY)
@@ -92,7 +97,13 @@ class Payment(UUIDModel, Timestamped):
     class Meta:
         db_table = 'payments'
         ordering = ['-created_at']
-        constraints = [models.CheckConstraint(condition=models.Q(amount__gte=0), name='payment_amount_nonneg')]
+        constraints = [
+            models.CheckConstraint(condition=models.Q(amount__gte=0), name='payment_amount_nonneg'),
+            # Exactly one thing is paid for: a trip checkout or an event booking.
+            models.CheckConstraint(condition=models.Q(checkout__isnull=False, event_registration__isnull=True)
+                                   | models.Q(checkout__isnull=True, event_registration__isnull=False),
+                                   name='payment_for_checkout_or_event'),
+        ]
 
 
 class PaymentTransaction(UUIDModel):
@@ -124,7 +135,7 @@ class PaymentAllocation(UUIDModel):
 
 class PaymentGatewayEvent(UUIDModel):
     """Webhook inbox. UNIQUE(provider, event_id) is the duplicate-webhook protection."""
-    provider = models.CharField(max_length=20, default='razorpay')
+    provider = models.CharField(max_length=20, default='cashfree')
     event_id = models.CharField(max_length=100)
     event_type = models.CharField(max_length=80)
     payload = models.JSONField()
@@ -160,7 +171,9 @@ class Refund(UUIDModel, Timestamped):
         FAILED = 'FAILED'
         REJECTED = 'REJECTED'
 
-    booking = models.ForeignKey('bookings.Booking', on_delete=models.PROTECT, related_name='refunds')
+    booking = models.ForeignKey('bookings.Booking', null=True, blank=True, on_delete=models.PROTECT, related_name='refunds')
+    event_registration = models.ForeignKey('trips.EventRegistration', null=True, blank=True, on_delete=models.PROTECT,
+                                           related_name='gateway_refunds')
     status = models.CharField(max_length=12, choices=Status.choices, default=Status.REQUESTED, db_index=True)
     currency = models.CharField(max_length=3, default='INR')
     amount = models.DecimalField(validators=[MinValueValidator(0)], **MONEY)
@@ -172,11 +185,14 @@ class Refund(UUIDModel, Timestamped):
     class Meta:
         db_table = 'refunds'
         ordering = ['-created_at']
+        constraints = [models.CheckConstraint(condition=models.Q(booking__isnull=False, event_registration__isnull=True)
+                                              | models.Q(booking__isnull=True, event_registration__isnull=False),
+                                              name='refund_for_booking_or_event')]
 
 
 class EventRefund(UUIDModel, Timestamped):
-    """Money owed back on a cancelled, paid event booking. Event fees are paid by UPI outside the system, so staff send
-    the refund by hand and record it here; recording it as sent tells the customer on WhatsApp."""
+    """Money owed back on a cancelled event booking that was paid by UPI QR before online payment (history). Staff sent
+    the refund by hand and recorded it here. Bookings paid through Cashfree are refunded with a `Refund` instead."""
 
     class Status(models.TextChoices):
         DUE = 'DUE', 'To send'
@@ -341,8 +357,8 @@ class VendorPayment(UUIDModel, Timestamped):
 
 
 class Settlement(UUIDModel):
-    """A gateway payout (Razorpay settlement) to reconcile against."""
-    provider = models.CharField(max_length=20, default='razorpay')
+    """A gateway payout (Cashfree settlement) to reconcile against."""
+    provider = models.CharField(max_length=20, default='cashfree')
     provider_settlement_id = models.CharField(max_length=80, unique=True)
     amount = models.DecimalField(**MONEY)
     fees = models.DecimalField(default=0, **MONEY)
